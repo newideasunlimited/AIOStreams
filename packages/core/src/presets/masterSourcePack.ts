@@ -121,7 +121,7 @@ export class MasterSourcePackPreset extends Preset {
 
       addons.push({
         name: 'Master | Discovery',
-        manifestUrl: `${appConfig.bootstrap.internalUrl}/builtins/master-catalog/${config}/manifest.json`,
+        manifestUrl: `${appConfig.bootstrap.internalUrl}/builtins/library/master-catalog/${config}/manifest.json`,
         enabled: true,
         library: false,
         resources: [constants.CATALOG_RESOURCE, constants.META_RESOURCE],
