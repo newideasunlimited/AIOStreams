@@ -1,7 +1,6 @@
 services:
   aiostreams:
-    build:
-      context: .
+    image: ghcr.io/newideasunlimited/aiostreams:master-addon
     container_name: master-aiostreams
     restart: unless-stopped
     ports:
