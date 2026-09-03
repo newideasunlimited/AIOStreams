@@ -81,9 +81,11 @@ import { StreamNZBPreset } from './streamnzb.js';
 import { DavexPreset } from './davex.js';
 import { HdHubPreset } from './hdhub.js';
 import { BaguettioPreset } from './baguettio.js';
+import { MasterSourcePackPreset } from './masterSourcePack.js';
 import { Preset } from './index.js';
 
 let PRESET_LIST: string[] = [
+  'master-source-pack',
   'custom',
   'torznab',
   'newznab',
@@ -187,6 +189,8 @@ export class PresetManager {
 
   static fromId(id: string): typeof Preset {
     switch (id) {
+      case 'master-source-pack':
+        return MasterSourcePackPreset;
       case 'torrentio':
         return TorrentioPreset;
       case 'stremthruStore':
