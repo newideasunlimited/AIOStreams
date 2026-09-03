@@ -1,5 +1,5 @@
 import { Addon, Option, UserData } from '../db/index.js';
-import { constants } from '../utils/index.js';
+import { appConfig, constants } from '../utils/index.js';
 import { Preset } from './preset.js';
 import { KnabenPreset } from './knaben.js';
 import { EztvPreset } from './eztv.js';
@@ -13,9 +13,10 @@ import { LibraryPreset } from './library.js';
 /**
  * Master Source Pack
  *
- * A single native source layer for the Master Add-On. The child adapters are
- * all hosted by this same AIOStreams instance. Stremio only sees the Master
- * Add-On manifest; it does not need the child addons installed separately.
+ * Native source layer for the self-hosted Master Add-On. Stremio installs only
+ * the Master Add-On manifest. This preset fans requests into source adapters
+ * hosted by this same server and also exposes native discovery catalogs backed
+ * by the user's own TMDB credentials.
  */
 export class MasterSourcePackPreset extends Preset {
   static override get METADATA() {
@@ -34,6 +35,22 @@ export class MasterSourcePackPreset extends Preset {
           'Expose your configured debrid library as native Master Add-On catalogs, metadata and streams.',
         type: 'boolean',
         default: true,
+      },
+      {
+        id: 'includeDiscovery',
+        name: 'Master discovery catalogs',
+        description:
+          'Expose self-hosted Trending, Popular and Top Rated movie/series catalogs using your TMDB credentials.',
+        type: 'boolean',
+        default: true,
+      },
+      {
+        id: 'includeAdultCatalogs',
+        name: 'Include adult TMDB results',
+        description: 'Allow adult results in Master discovery catalogs.',
+        type: 'boolean',
+        default: true,
+        showInSimpleMode: false,
       },
       {
         id: 'includeAnime',
@@ -68,7 +85,7 @@ export class MasterSourcePackPreset extends Preset {
       USER_AGENT: 'Master-Addon',
       SUPPORTED_SERVICES: KnabenPreset.METADATA.SUPPORTED_SERVICES,
       DESCRIPTION:
-        'Native Master Add-On source layer for movie, TV, anime, debrid-library catalogs, metadata and streams.',
+        'Native Master Add-On source layer for discovery catalogs, movie, TV, anime, debrid-library metadata and streams.',
       OPTIONS: options,
       SUPPORTED_STREAM_TYPES: [constants.DEBRID_STREAM_TYPE],
       SUPPORTED_RESOURCES: [
@@ -87,8 +104,39 @@ export class MasterSourcePackPreset extends Preset {
     const addons: Addon[] = [];
     const general = options.includeGeneral ?? true;
     const includeLibrary = options.includeLibrary ?? true;
+    const includeDiscovery = options.includeDiscovery ?? true;
     const anime = options.includeAnime ?? true;
     const includeNekoBt = options.includeNekoBt ?? true;
+
+    if (includeDiscovery && (userData.tmdbApiKey || userData.tmdbAccessToken)) {
+      const config = this.base64EncodeJSON(
+        {
+          apiKey: userData.tmdbApiKey || undefined,
+          accessToken: userData.tmdbAccessToken || undefined,
+          language: 'en-US',
+          includeAdult: options.includeAdultCatalogs ?? true,
+        },
+        'urlSafe'
+      );
+
+      addons.push({
+        name: 'Master | Discovery',
+        manifestUrl: `${appConfig.bootstrap.internalUrl}/builtins/master-catalog/${config}/manifest.json`,
+        enabled: true,
+        library: false,
+        resources: [constants.CATALOG_RESOURCE, constants.META_RESOURCE],
+        mediaTypes: ['movie', 'series'],
+        timeout: 15000,
+        preset: {
+          id: '',
+          type: 'master-source-pack',
+          options,
+        },
+        headers: {
+          'User-Agent': 'Master-Addon',
+        },
+      });
+    }
 
     if (includeLibrary) {
       addons.push(
