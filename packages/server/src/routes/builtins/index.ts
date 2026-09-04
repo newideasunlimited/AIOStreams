@@ -1,6 +1,5 @@
 import express, { Router } from 'express';
 import libraryRouter from './library.js';
-import masterCatalogRouter from './master-catalog.js';
 
 export { default as gdrive } from './gdrive.js';
 export { default as torboxSearch } from './torbox-search.js';
@@ -16,7 +15,6 @@ export { default as easynews } from './easynews.js';
 export { default as masterNative } from './master-native.js';
 
 const library: Router = express.Router();
-library.use('/master-catalog', masterCatalogRouter);
 library.use('/', libraryRouter);
 
 export { library };
