@@ -46,7 +46,7 @@ function adultMeta(item: AdultTorrentItem) {
     description: `${item.indexer} • ${item.seeders} seeders${
       item.size ? ` • ${(item.size / 1024 ** 3).toFixed(2)} GB` : ''
     }`,
-    poster: posterUrl(id),
+    poster: item.poster || posterUrl(id),
     posterShape: 'poster',
     behaviorHints: { adult: true },
   };
