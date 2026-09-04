@@ -215,6 +215,78 @@ async function searchPirateBay(query: string, mediaType: string): Promise<Torren
   }));
 }
 
+function normaliseWords(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function titleLooksRelevant(candidateTitle: string, requestedTitle: string): boolean {
+  const wanted = normaliseWords(requestedTitle).filter((word) => word.length > 1);
+  if (wanted.length === 0) return true;
+
+  const candidateWords = new Set(normaliseWords(candidateTitle));
+  const matched = wanted.filter((word) => candidateWords.has(word)).length;
+
+  // Single-word titles must match exactly as a token. Multi-word titles need
+  // strong overlap so a scraper cannot attach a neighboring result's magnet.
+  if (wanted.length === 1) return matched === 1;
+  return matched >= Math.max(2, Math.ceil(wanted.length * 0.6));
+}
+
+function episodeLooksRelevant(
+  candidateTitle: string,
+  mediaType: string,
+  season: number | undefined,
+  episode: number | undefined
+): boolean {
+  if (mediaType !== 'series' || season === undefined) return true;
+
+  const raw = candidateTitle.toLowerCase();
+  const seasonText = String(season);
+  const episodeText = episode === undefined ? undefined : String(episode);
+
+  if (episodeText !== undefined) {
+    const exactEpisodePatterns = [
+      new RegExp(`s0*${seasonText}e0*${episodeText}(?:\\D|$)`, 'i'),
+      new RegExp(`(?:^|\\D)0*${seasonText}x0*${episodeText}(?:\\D|$)`, 'i'),
+    ];
+    if (exactEpisodePatterns.some((pattern) => pattern.test(raw))) return true;
+
+    // If the release explicitly names some other episode, reject it.
+    if (/s\d{1,2}e\d{1,3}|(?:^|\D)\d{1,2}x\d{1,3}(?:\D|$)/i.test(raw)) {
+      return false;
+    }
+  }
+
+  // Season packs are valid because the existing debrid pipeline can select
+  // the requested episode from the pack after the torrent is resolved.
+  const seasonPackPatterns = [
+    new RegExp(`s0*${seasonText}(?:\\D|$)`, 'i'),
+    new RegExp(`season[ ._-]*0*${seasonText}(?:\\D|$)`, 'i'),
+  ];
+  return seasonPackPatterns.some((pattern) => pattern.test(raw));
+}
+
+function filterRelevantCandidates(
+  candidates: TorrentCandidate[],
+  requestedTitle: string,
+  mediaType: string,
+  season: number | undefined,
+  episode: number | undefined
+): TorrentCandidate[] {
+  return candidates.filter((candidate) => {
+    if (!candidate.title) return false;
+    return (
+      titleLooksRelevant(candidate.title, requestedTitle) &&
+      episodeLooksRelevant(candidate.title, mediaType, season, episode)
+    );
+  });
+}
+
 function deduplicate(candidates: TorrentCandidate[]): UnprocessedTorrent[] {
   const byHash = new Map<string, TorrentCandidate>();
   for (const candidate of candidates) {
@@ -242,7 +314,7 @@ function deduplicate(candidates: TorrentCandidate[]): UnprocessedTorrent[] {
 export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> {
   readonly id = 'master-native';
   readonly name = 'Master Native';
-  readonly version = '1.2.1';
+  readonly version = '1.2.2';
   readonly logger = logger;
 
   constructor(userData: MasterNativeAddonConfig, clientIp?: string) {
@@ -289,12 +361,20 @@ export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> 
     const started = Date.now();
     const groups = await Promise.all(tasks);
     const candidates = groups.flat();
-    const torrents = deduplicate(candidates);
+    const relevantCandidates = filterRelevantCandidates(
+      candidates,
+      title,
+      parsedId.mediaType,
+      season,
+      episode
+    );
+    const torrents = deduplicate(relevantCandidates);
 
     logger.info('Master native search complete', {
       query,
       providers: tasks.length,
       rawResults: candidates.length,
+      droppedIrrelevant: candidates.length - relevantCandidates.length,
       results: torrents.length,
       providerBudgetMs: PROVIDER_BUDGET_MS,
       tookMs: Date.now() - started,
