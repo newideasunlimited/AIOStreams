@@ -13,6 +13,10 @@ interface MasterCatalogConfig {
   includeAdult?: boolean;
 }
 
+function firstParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 function parseConfig(encodedConfig: string): MasterCatalogConfig {
   const config = JSON.parse(fromUrlSafeBase64(encodedConfig));
   if (!config.apiKey && !config.accessToken) {
@@ -40,9 +44,8 @@ async function tmdbRequest<T>(
   config: MasterCatalogConfig,
   params: Record<string, string | number | boolean | undefined> = {}
 ): Promise<T> {
-  const headers = new Headers();
-  if (config.accessToken) headers.set('Authorization', `Bearer ${config.accessToken}`);
-  headers.set('Accept', 'application/json');
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (config.accessToken) headers.Authorization = `Bearer ${config.accessToken}`;
 
   const response = await makeRequest(tmdbUrl(path, config, params).toString(), {
     timeout: 10000,
@@ -93,7 +96,9 @@ router.get(
   '/:encodedConfig/manifest.json',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      parseConfig(req.params.encodedConfig);
+      const encodedConfig = firstParam(req.params.encodedConfig);
+      if (!encodedConfig) throw new Error('Missing Master catalog configuration');
+      parseConfig(encodedConfig);
       const catalogs = [
         ['movie', 'master.trending.movie', 'Master • Trending Movies'],
         ['series', 'master.trending.series', 'Master • Trending Series'],
@@ -128,15 +133,17 @@ router.get(
   '/:encodedConfig/catalog/:type/:id{/:extras}.json',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const config = parseConfig(req.params.encodedConfig);
-      const type = req.params.type === 'series' ? 'series' : 'movie';
-      const extras = parseExtras(req.params.extras);
+      const encodedConfig = firstParam(req.params.encodedConfig);
+      if (!encodedConfig) throw new Error('Missing Master catalog configuration');
+      const config = parseConfig(encodedConfig);
+      const type = firstParam(req.params.type) === 'series' ? 'series' : 'movie';
+      const extras = parseExtras(firstParam(req.params.extras));
       const skip = Math.max(0, Number(extras.skip || 0) || 0);
       const page = Math.floor(skip / 20) + 1;
       const includeAdult = config.includeAdult ?? false;
 
       let path: string;
-      switch (req.params.id) {
+      switch (firstParam(req.params.id)) {
         case 'master.trending.movie':
           path = '/trending/movie/week';
           break;
@@ -164,7 +171,9 @@ router.get(
         page,
         include_adult: includeAdult,
       });
-      res.json({ metas: (data.results || []).map((item) => mapCatalogItem(item, type)) });
+      res.json({
+        metas: (data.results || []).map((item) => mapCatalogItem(item, type)),
+      });
     } catch (error) {
       next(error);
     }
@@ -175,9 +184,12 @@ router.get(
   '/:encodedConfig/meta/:type/:id.json',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const config = parseConfig(req.params.encodedConfig);
-      const type = req.params.type === 'series' ? 'series' : 'movie';
-      const idMatch = String(req.params.id).match(/^tmdb:(\d+)(?::(\d+):(\d+))?$/);
+      const encodedConfig = firstParam(req.params.encodedConfig);
+      if (!encodedConfig) throw new Error('Missing Master catalog configuration');
+      const config = parseConfig(encodedConfig);
+      const type = firstParam(req.params.type) === 'series' ? 'series' : 'movie';
+      const idValue = firstParam(req.params.id) || '';
+      const idMatch = idValue.match(/^tmdb:(\d+)(?::(\d+):(\d+))?$/);
       if (!idMatch) {
         res.json({ meta: null });
         return;
@@ -192,7 +204,9 @@ router.get(
           meta: {
             ...mapCatalogItem(item, 'movie'),
             runtime: item.runtime ? `${item.runtime} min` : undefined,
-            genres: Array.isArray(item.genres) ? item.genres.map((g: any) => g.name) : undefined,
+            genres: Array.isArray(item.genres)
+              ? item.genres.map((g: any) => g.name)
+              : undefined,
           },
         });
         return;
@@ -217,7 +231,9 @@ router.get(
           season: episode.season_number,
           episode: episode.episode_number,
           released: episode.air_date ? `${episode.air_date}T00:00:00.000Z` : undefined,
-          thumbnail: episode.still_path ? `${IMAGE_BASE}${episode.still_path}` : undefined,
+          thumbnail: episode.still_path
+            ? `${IMAGE_BASE}${episode.still_path}`
+            : undefined,
           overview: episode.overview || undefined,
         }))
       );
@@ -225,7 +241,9 @@ router.get(
       res.json({
         meta: {
           ...mapCatalogItem(item, 'series'),
-          genres: Array.isArray(item.genres) ? item.genres.map((g: any) => g.name) : undefined,
+          genres: Array.isArray(item.genres)
+            ? item.genres.map((g: any) => g.name)
+            : undefined,
           videos,
         },
       });
