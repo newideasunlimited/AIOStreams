@@ -12,7 +12,7 @@ export const MASTER_ADULT_ID_PREFIX = 'aiostreams::adult.';
 export const MASTER_ADULT_CATALOG_ID = 'master-adult';
 
 export type AdultTorrentItem = {
-  hash?: string;
+  hash: string;
   title: string;
   seeders: number;
   size: number;
@@ -99,7 +99,7 @@ function dedupe(items: AdultTorrentItem[]): AdultTorrentItem[] {
     if (!current || item.seeders > current.seeders) {
       byKey.set(key, {
         ...item,
-        hash: item.hash?.toLowerCase(),
+        hash: item.hash.toLowerCase(),
       });
     }
   }
@@ -213,6 +213,7 @@ async function searchPornRips(search?: string): Promise<AdultTorrentItem[]> {
     : `${PORNRIPS_BASE}/`;
   const html = await fetchText(url);
   return parsePornRipsListings(html).slice(0, 40).map((listing) => ({
+    hash: '',
     title: listing.title,
     seeders: 0,
     size: listing.size,
@@ -326,7 +327,7 @@ export function decodeAdultId(id: string): AdultTorrentItem | null {
     if (payload.h && !/^[a-f0-9]{40}$/i.test(payload.h)) return null;
     if (!payload.h && !payload.u) return null;
     return {
-      hash: payload.h?.toLowerCase(),
+      hash: (payload.h ?? '').toLowerCase(),
       title: payload.t,
       size: Number(payload.s ?? 0),
       indexer: payload.i ?? 'Adult',
