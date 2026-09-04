@@ -1,4 +1,4 @@
-import { Addon, Option, UserData } from '../db/index.js';
+import { Addon, Option, Resource, UserData } from '../db/index.js';
 import { constants } from '../utils/index.js';
 import { Preset } from './preset.js';
 import { MasterNativePreset } from './masterNative.js';
@@ -54,6 +54,11 @@ export class MasterSourcePackPreset extends Preset {
         showInSimpleMode: false,
       },
     ];
+    const supportedResources: Resource[] = [
+      constants.STREAM_RESOURCE,
+      'catalog',
+      'meta',
+    ];
 
     return {
       ID: 'master-source-pack',
@@ -67,7 +72,7 @@ export class MasterSourcePackPreset extends Preset {
         'Self-hosted Master Add-On source layer for movie, TV, anime, adult and debrid-library streams.',
       OPTIONS: options,
       SUPPORTED_STREAM_TYPES: [constants.DEBRID_STREAM_TYPE],
-      SUPPORTED_RESOURCES: [constants.STREAM_RESOURCE, 'catalog', 'meta'],
+      SUPPORTED_RESOURCES: supportedResources,
       BUILTIN: true,
     };
   }
