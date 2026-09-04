@@ -51,6 +51,12 @@ function getStremioManifest(addon: MasterNativeAddon) {
   };
 }
 
+function toStremioMetaType<T extends { id: string; type: string }>(item: T): T {
+  return item.id.startsWith(MASTER_ADULT_ID_PREFIX)
+    ? { ...item, type: 'movie' }
+    : item;
+}
+
 router.get(
   '/:encodedConfig/manifest.json',
   async (
@@ -90,7 +96,7 @@ router.get(
       const addon = createAddon(encodedConfig, req.userIp);
       const internalType = id === MASTER_ADULT_CATALOG_ID ? 'adult' : type;
       const metas = await addon.getCatalog(internalType, id);
-      res.json({ metas });
+      res.json({ metas: metas.map(toStremioMetaType) });
     } catch (error) {
       next(error);
     }
@@ -109,7 +115,7 @@ router.get(
       const addon = createAddon(encodedConfig, req.userIp);
       const internalType = id === MASTER_ADULT_CATALOG_ID ? 'adult' : type;
       const metas = await addon.getCatalog(internalType, id, extra);
-      res.json({ metas });
+      res.json({ metas: metas.map(toStremioMetaType) });
     } catch (error) {
       next(error);
     }
@@ -128,7 +134,7 @@ router.get(
       const addon = createAddon(encodedConfig, req.userIp);
       const internalType = id.startsWith(MASTER_ADULT_ID_PREFIX) ? 'adult' : type;
       const meta = await addon.getMeta(internalType, id);
-      res.json({ meta });
+      res.json({ meta: toStremioMetaType(meta) });
     } catch (error) {
       next(error);
     }
