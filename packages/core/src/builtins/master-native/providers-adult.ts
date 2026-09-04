@@ -1,9 +1,13 @@
 /*
  * Native adult torrent catalog/search providers for Master Add-On.
  *
- * This implementation is independent and uses public torrent indexes directly.
- * It intentionally avoids copying code from unlicensed adult Stremio addons.
+ * Sources are public and resolved locally. PornRips support follows the same
+ * catalog-first pattern used by the working GPL reference addon: list scenes,
+ * keep their artwork, and resolve the torrent behind each scene into a real
+ * info hash before exposing it to Stremio.
  */
+
+import parseTorrent from 'parse-torrent';
 
 export const MASTER_ADULT_ID_PREFIX = 'aiostreams::adult.';
 export const MASTER_ADULT_CATALOG_ID = 'master-adult';
@@ -14,21 +18,29 @@ export type AdultTorrentItem = {
   seeders: number;
   size: number;
   indexer: string;
+  poster?: string;
 };
 
-const TIMEOUT_MS = 4500;
+const TIMEOUT_MS = 7000;
+const PORNRIPS_BASE = 'https://pornrips.to';
 
-async function fetchText(url: string): Promise<string> {
+async function fetchResponse(url: string, referer?: string): Promise<Response> {
   const response = await fetch(url, {
     headers: {
       'User-Agent':
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36 Master-Addon/1.3',
-      Accept: 'application/json,text/xml,application/xml,text/html;q=0.9,*/*;q=0.8',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 Master-Addon/1.5',
+      Accept: 'text/html,application/xhtml+xml,application/xml,application/json;q=0.9,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.5',
+      ...(referer ? { Referer: referer } : {}),
     },
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-  return response.text();
+  return response;
+}
+
+async function fetchText(url: string, referer?: string): Promise<string> {
+  return (await fetchResponse(url, referer)).text();
 }
 
 function decode(value: string): string {
@@ -46,19 +58,29 @@ function strip(value: string): string {
 }
 
 function parseSize(text: string): number {
-  const match = text.match(/([\d.,]+)\s*(B|KB|MB|GB|TB)\b/i);
+  const match = text.match(/([\d.,]+)\s*(B|KB|MB|GB|TB|GiB|MiB)\b/i);
   if (!match) return 0;
   const value = Number.parseFloat(match[1].replace(',', '.'));
   const units: Record<string, number> = {
     b: 1,
     kb: 1024,
     mb: 1024 ** 2,
+    mib: 1024 ** 2,
     gb: 1024 ** 3,
+    gib: 1024 ** 3,
     tb: 1024 ** 4,
   };
   return Number.isFinite(value)
     ? Math.round(value * (units[match[2].toLowerCase()] ?? 1))
     : 0;
+}
+
+function absoluteUrl(value: string, base: string): string {
+  try {
+    return new URL(decode(value), base).toString();
+  } catch {
+    return '';
+  }
 }
 
 function dedupe(items: AdultTorrentItem[]): AdultTorrentItem[] {
@@ -140,6 +162,97 @@ async function searchSukebei(search?: string): Promise<AdultTorrentItem[]> {
   return results;
 }
 
+type PornRipsListing = {
+  title: string;
+  detailUrl: string;
+  poster?: string;
+  size: number;
+};
+
+function parsePornRipsListings(html: string): PornRipsListing[] {
+  const results: PornRipsListing[] = [];
+  const articleRe = /<article\b[\s\S]*?<\/article>/gi;
+  for (const match of html.matchAll(articleRe)) {
+    const article = match[0];
+    const titleMatch = article.match(
+      /<h2[^>]*class=["'][^"']*(?:entry-title)?[^"']*["'][^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i
+    ) ?? article.match(/<h2[^>]*>[\s\S]*?<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/i);
+    if (!titleMatch) continue;
+
+    const title = strip(titleMatch[2]);
+    const detailUrl = absoluteUrl(titleMatch[1], PORNRIPS_BASE);
+    if (!title || !detailUrl) continue;
+
+    const imageMatch = article.match(
+      /<img[^>]+(?:data-lazy-src|data-src|src)=["']([^"']+)["'][^>]*>/i
+    );
+    const poster = imageMatch ? absoluteUrl(imageMatch[1], detailUrl) : undefined;
+    results.push({
+      title,
+      detailUrl,
+      poster: poster || undefined,
+      size: parseSize(strip(article)),
+    });
+  }
+  return results;
+}
+
+async function resolvePornRipsListing(listing: PornRipsListing): Promise<AdultTorrentItem | null> {
+  const detailHtml = await fetchText(listing.detailUrl, listing.detailUrl);
+  const magnet = decode(
+    detailHtml.match(/href=["'](magnet:\?xt=urn:btih:[^"']+)["']/i)?.[1] ?? ''
+  );
+
+  let hash = '';
+  if (magnet) {
+    try {
+      hash = (await parseTorrent(magnet)).infoHash?.toLowerCase() ?? '';
+    } catch {
+      hash = '';
+    }
+  }
+
+  if (!hash) {
+    let torrentUrl = decode(
+      detailHtml.match(/href=["']([^"']+\.torrent(?:\?[^"']*)?)["']/i)?.[1] ?? ''
+    );
+    if (torrentUrl) torrentUrl = absoluteUrl(torrentUrl, listing.detailUrl);
+    if (!torrentUrl) {
+      torrentUrl = `${PORNRIPS_BASE}/torrents/${encodeURIComponent(listing.title)}.torrent`;
+    }
+
+    try {
+      const torrentResponse = await fetchResponse(torrentUrl, listing.detailUrl);
+      const buffer = Buffer.from(await torrentResponse.arrayBuffer());
+      hash = (await parseTorrent(buffer)).infoHash?.toLowerCase() ?? '';
+    } catch {
+      hash = '';
+    }
+  }
+
+  if (!/^[a-f0-9]{40}$/i.test(hash)) return null;
+  return {
+    hash,
+    title: listing.title,
+    seeders: 0,
+    size: listing.size,
+    indexer: 'PornRips',
+    poster: listing.poster,
+  };
+}
+
+async function searchPornRips(search?: string): Promise<AdultTorrentItem[]> {
+  const url = search
+    ? `${PORNRIPS_BASE}/?s=${encodeURIComponent(search)}`
+    : `${PORNRIPS_BASE}/`;
+  const html = await fetchText(url);
+  const listings = parsePornRipsListings(html).slice(0, 20);
+  const settled = await Promise.allSettled(listings.map(resolvePornRipsListing));
+  return settled.flatMap((result) =>
+    result.status === 'fulfilled' && result.value ? [result.value] : []
+  );
+}
+
 export async function fetchAdultCatalog(
   search?: string,
   genre?: string,
@@ -149,6 +262,7 @@ export async function fetchAdultCatalog(
     genre === 'VR' ? [search, 'VR'].filter(Boolean).join(' ') : search;
 
   const settled = await Promise.allSettled([
+    searchPornRips(effectiveSearch),
     searchPirateBayAdult(effectiveSearch),
     searchSukebei(effectiveSearch),
   ]);
@@ -178,6 +292,7 @@ export function encodeAdultId(item: AdultTorrentItem): string {
       s: item.size,
       i: item.indexer,
       n: item.seeders,
+      p: item.poster,
     }),
     'utf8'
   ).toString('base64url');
@@ -189,7 +304,7 @@ export function decodeAdultId(id: string): AdultTorrentItem | null {
   try {
     const payload = JSON.parse(
       Buffer.from(id.slice(MASTER_ADULT_ID_PREFIX.length), 'base64url').toString('utf8')
-    ) as { h?: string; t?: string; s?: number; i?: string; n?: number };
+    ) as { h?: string; t?: string; s?: number; i?: string; n?: number; p?: string };
     if (!payload.h || !/^[a-f0-9]{40}$/i.test(payload.h) || !payload.t) return null;
     return {
       hash: payload.h.toLowerCase(),
@@ -197,6 +312,7 @@ export function decodeAdultId(id: string): AdultTorrentItem | null {
       size: Number(payload.s ?? 0),
       indexer: payload.i ?? 'Adult',
       seeders: Number(payload.n ?? 0),
+      poster: payload.p,
     };
   } catch {
     return null;
