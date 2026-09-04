@@ -13,6 +13,11 @@ import {
 import { NZB, UnprocessedTorrent } from '../../debrid/utils.js';
 import { createLogger, ParsedId } from '../../utils/index.js';
 import { validateInfoHash } from '../utils/debrid.js';
+import {
+  searchBitsearch,
+  searchBT4G,
+  searchBTDig,
+} from './providers-extra.js';
 
 const logger = createLogger('master-native');
 
@@ -192,7 +197,7 @@ function deduplicate(candidates: TorrentCandidate[]): UnprocessedTorrent[] {
 export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> {
   readonly id = 'master-native';
   readonly name = 'Master Native';
-  readonly version = '1.0.0';
+  readonly version = '1.1.0';
   readonly logger = logger;
 
   constructor(userData: MasterNativeAddonConfig, clientIp?: string) {
@@ -217,6 +222,9 @@ export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> 
 
     const tasks: Array<Promise<TorrentCandidate[]>> = [
       searchPirateBay(query, parsedId.mediaType),
+      searchBitsearch(query),
+      searchBT4G(query),
+      searchBTDig(query),
     ];
     if (parsedId.mediaType === 'movie') tasks.push(searchYts(imdbId));
     if (parsedId.mediaType === 'series') tasks.push(searchEztv(imdbId, season, episode));
@@ -224,10 +232,12 @@ export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> 
     const started = Date.now();
     const settled = await Promise.allSettled(tasks);
     const candidates: TorrentCandidate[] = [];
+    let failedProviders = 0;
     for (const result of settled) {
       if (result.status === 'fulfilled') {
         candidates.push(...result.value);
       } else {
+        failedProviders++;
         logger.warn('Master native provider failed', {
           error: result.reason instanceof Error ? result.reason.message : String(result.reason),
         });
@@ -238,6 +248,7 @@ export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> 
     logger.info('Master native search complete', {
       query,
       providers: tasks.length,
+      failedProviders,
       rawResults: candidates.length,
       results: torrents.length,
       tookMs: Date.now() - started,
