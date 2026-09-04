@@ -5,6 +5,7 @@ import {
   decodeAdultId,
   encodeAdultId,
   fetchAdultCatalog,
+  resolveAdultItem,
   MASTER_ADULT_CATALOG_ID,
   MASTER_ADULT_ID_PREFIX,
   config as appConfig,
@@ -43,7 +44,7 @@ function adultMeta(item: AdultTorrentItem) {
     id,
     type: 'movie',
     name: item.title,
-    description: `${item.indexer} • ${item.seeders} seeders${
+    description: `${item.indexer}${item.seeders ? ` • ${item.seeders} seeders` : ''}${
       item.size ? ` • ${(item.size / 1024 ** 3).toFixed(2)} GB` : ''
     }`,
     poster: item.poster || posterUrl(id),
@@ -65,9 +66,6 @@ async function getAdultCatalog(extra?: string) {
   const { skip, search, genre } = parseAdultExtras(extra);
   let items = await fetchAdultCatalog(search, genre, skip);
 
-  // The TPB top-list endpoint is intermittently unavailable even when search
-  // works. Keep Home populated by falling back to a normal adult-category
-  // search instead of returning a dead catalog.
   if (!search && items.length === 0) {
     items = await fetchAdultCatalog('XXX', genre, skip);
   }
@@ -216,23 +214,27 @@ router.get(
           return;
         }
 
+        const resolved = await resolveAdultItem(item);
+        if (!resolved?.hash) {
+          res.json({ streams: [] });
+          return;
+        }
+
+        const resolvedId = encodeAdultId(resolved);
         const addon = createAddon(encodedConfig, req.userIp);
         let debridStreams: any[] = [];
         try {
-          debridStreams = await addon.getStreams('adult', id);
+          debridStreams = await addon.getStreams('adult', resolvedId);
         } catch {
           debridStreams = [];
         }
 
-        // Always include a native Stremio torrent stream so adult playback does
-        // not depend on any paid debrid provider. Existing debrid results are
-        // still kept when the user has one configured.
         const directStream = {
           name: 'Master • Direct Torrent',
-          title: `${item.title}\n${item.indexer} • ${item.seeders} seeders`,
-          infoHash: item.hash,
+          title: `${resolved.title}\n${resolved.indexer}${resolved.seeders ? ` • ${resolved.seeders} seeders` : ''}`,
+          infoHash: resolved.hash,
           behaviorHints: {
-            bingeGroup: `master-adult-${item.hash}`,
+            bingeGroup: `master-adult-${resolved.hash}`,
           },
         };
 
