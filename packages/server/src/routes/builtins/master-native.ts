@@ -15,6 +15,9 @@ import {
 } from '@aiostreams/core';
 
 const router: Router = Router();
+const EPORNER_BASE = 'https://www.eporner.com';
+const DIRECT_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
 
 interface ManifestParams {
   encodedConfig?: string;
@@ -71,8 +74,107 @@ function parseAdultExtras(extra?: string) {
 
 async function getAdultCatalog(extra?: string) {
   const { skip, search, genre } = parseAdultExtras(extra);
-  const items = await fetchAdultCatalog(search, genre, skip);
+
+  // Keep the Stremio home row on the fast API-backed tube source. The generic
+  // provider still handles search, category browsing and fallbacks.
+  const effectiveSearch = !search && !genre ? 'all' : search;
+  const items = await fetchAdultCatalog(effectiveSearch, genre, skip);
   return items.map(adultMeta);
+}
+
+function epornerHashToken(hex: string): string {
+  if (!/^[a-f0-9]{32}$/i.test(hex)) return '';
+  let out = '';
+  for (let offset = 0; offset < 32; offset += 8) {
+    out += Number.parseInt(hex.slice(offset, offset + 8), 16).toString(36);
+  }
+  return out;
+}
+
+function epornerVideoId(url: string, fallback?: string): string {
+  try {
+    const path = new URL(url).pathname;
+    const match =
+      path.match(/\/(?:hd-porn|embed)\/([^/?#]+)/i) ??
+      path.match(/\/video-([^/?#]+)/i);
+    return match?.[1] || fallback || '';
+  } catch {
+    return fallback || '';
+  }
+}
+
+function qualityRank(value: string): number {
+  const match = value.match(/(2160|1440|1080|720|480|360|240)p?/i);
+  return Number(match?.[1] ?? 0);
+}
+
+async function resolveCurrentEpornerStreams(
+  item: AdultTorrentItem
+): Promise<Array<{ url: string; name: string; referer?: string }>> {
+  if (item.indexer !== 'EPorner' || !item.detailUrl) return [];
+
+  try {
+    const pageResponse = await fetch(item.detailUrl, {
+      headers: {
+        'User-Agent': DIRECT_USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+        Referer: EPORNER_BASE,
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!pageResponse.ok) return [];
+
+    const html = await pageResponse.text();
+    const rawHash = html.match(/hash\s*[:=]\s*["']([\da-f]{32})["']/i)?.[1] ?? '';
+    const hash = epornerHashToken(rawHash);
+    const referer = pageResponse.url || item.detailUrl;
+    const videoId = epornerVideoId(referer, item.sourceId);
+    if (!hash || !videoId) return [];
+
+    const xhr = new URL(`${EPORNER_BASE}/xhr/video/${encodeURIComponent(videoId)}`);
+    xhr.searchParams.set('hash', hash);
+    xhr.searchParams.set('device', 'generic');
+    xhr.searchParams.set('domain', 'www.eporner.com');
+    xhr.searchParams.set('fallback', 'false');
+
+    const videoResponse = await fetch(xhr.toString(), {
+      headers: {
+        'User-Agent': DIRECT_USER_AGENT,
+        Accept: 'application/json,*/*;q=0.8',
+        Referer: referer,
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!videoResponse.ok) return [];
+
+    const video = (await videoResponse.json()) as {
+      available?: boolean;
+      sources?: Record<string, Record<string, { src?: string }>>;
+    };
+    if (video.available === false || !video.sources) return [];
+
+    const seen = new Set<string>();
+    const streams: Array<{ url: string; name: string; referer?: string }> = [];
+    for (const [kind, formats] of Object.entries(video.sources)) {
+      if (!formats || typeof formats !== 'object') continue;
+      for (const [formatId, format] of Object.entries(formats)) {
+        const streamUrl = format?.src;
+        if (!streamUrl || !/^https?:\/\//i.test(streamUrl) || seen.has(streamUrl)) continue;
+        seen.add(streamUrl);
+        streams.push({
+          url: streamUrl,
+          name: `EPorner ${formatId || kind || 'Watch'}`,
+          referer,
+        });
+      }
+    }
+
+    return streams.sort((a, b) => qualityRank(b.name) - qualityRank(a.name));
+  } catch {
+    return [];
+  }
 }
 
 function getStremioManifest(addon: MasterNativeAddon) {
@@ -230,7 +332,17 @@ router.get(
         }
 
         if (item.sourceKind === 'direct') {
-          const directStreams = await resolveAdultDirectStreams(item);
+          let directStreams =
+            item.indexer === 'EPorner'
+              ? await resolveCurrentEpornerStreams(item)
+              : await resolveAdultDirectStreams(item);
+
+          // Keep the older resolver as a fallback while the current XHR contract
+          // is the preferred EPorner path.
+          if (item.indexer === 'EPorner' && directStreams.length === 0) {
+            directStreams = await resolveAdultDirectStreams(item);
+          }
+
           const streams = directStreams.map((stream) => ({
             name: `Master • ${stream.name}`,
             title: item.title,
@@ -240,8 +352,7 @@ router.get(
               bingeGroup: `master-adult-direct-${item.indexer}-${item.sourceId || 'video'}`,
               proxyHeaders: {
                 request: {
-                  'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+                  'User-Agent': DIRECT_USER_AGENT,
                   ...(stream.referer ? { Referer: stream.referer } : {}),
                 },
               },
