@@ -6,6 +6,8 @@ import {
   constants,
   UserData,
   userScopeIdSuffix,
+  MASTER_ADULT_CATALOG_ID,
+  MASTER_ADULT_ID_PREFIX,
 } from '@aiostreams/core';
 import { Manifest } from '@aiostreams/core';
 import { createLogger } from '@aiostreams/core';
@@ -31,6 +33,51 @@ const manifest = async (config?: UserData): Promise<Manifest> => {
     catalogs = aiostreams.getCatalogs();
     resources = aiostreams.getResources();
     addonCatalogs = aiostreams.getAddonCatalogs();
+
+    // Stremio's Home UI does not reliably surface custom media types such as
+    // "adult". Expose the isolated Master adult catalog through the standard
+    // movie type so it appears as a normal Home/Discover row.
+    const hasPornCatalog = catalogs.some(
+      (catalog) => catalog.type === 'movie' && catalog.id === MASTER_ADULT_CATALOG_ID
+    );
+    if (!hasPornCatalog) {
+      catalogs = [
+        ...catalogs,
+        {
+          type: 'movie',
+          id: MASTER_ADULT_CATALOG_ID,
+          name: 'Porn',
+          extra: [
+            { name: 'skip' },
+            { name: 'search' },
+            {
+              name: 'genre',
+              options: ['Latest', 'VR', 'JAV'],
+              isRequired: false,
+            },
+          ],
+        },
+      ];
+    }
+
+    resources = [
+      ...resources,
+      {
+        name: 'catalog',
+        types: ['movie'],
+        idPrefixes: [MASTER_ADULT_CATALOG_ID],
+      },
+      {
+        name: 'meta',
+        types: ['movie'],
+        idPrefixes: [MASTER_ADULT_ID_PREFIX],
+      },
+      {
+        name: 'stream',
+        types: ['movie'],
+        idPrefixes: [MASTER_ADULT_ID_PREFIX],
+      },
+    ];
   }
   return {
     name: config?.addonName || appConfig.branding.addonName,
