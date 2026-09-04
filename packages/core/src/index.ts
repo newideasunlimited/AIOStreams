@@ -46,6 +46,7 @@ export {
   decodeAdultId,
   encodeAdultId,
   fetchAdultCatalog,
+  resolveAdultItem,
   MASTER_ADULT_CATALOG_ID,
   MASTER_ADULT_ID_PREFIX,
   type AdultTorrentItem,
