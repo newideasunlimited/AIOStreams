@@ -250,7 +250,8 @@ router.get(
 );
 
 router.get('/poster/:id.svg', (req: Request, res: Response) => {
-  const id = decodeURIComponent(req.params.id || '');
+  const rawId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = decodeURIComponent(rawId || '');
   const item = decodeAdultId(id);
   const title = (item?.title || 'Adult').slice(0, 110);
   const escaped = title
