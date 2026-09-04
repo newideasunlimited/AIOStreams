@@ -26,6 +26,13 @@ import {
   searchTorrentDownloads,
   searchTorrentGalaxy,
 } from './providers-tier1.js';
+import {
+  searchKickass,
+  searchMagnetDL,
+  searchNyaa,
+  searchRutor,
+  searchTokyoTosho,
+} from './providers-torrentio.js';
 
 const logger = createLogger('master-native');
 
@@ -231,8 +238,6 @@ function titleLooksRelevant(candidateTitle: string, requestedTitle: string): boo
   const candidateWords = new Set(normaliseWords(candidateTitle));
   const matched = wanted.filter((word) => candidateWords.has(word)).length;
 
-  // Single-word titles must match exactly as a token. Multi-word titles need
-  // strong overlap so a scraper cannot attach a neighboring result's magnet.
   if (wanted.length === 1) return matched === 1;
   return matched >= Math.max(2, Math.ceil(wanted.length * 0.6));
 }
@@ -256,14 +261,11 @@ function episodeLooksRelevant(
     ];
     if (exactEpisodePatterns.some((pattern) => pattern.test(raw))) return true;
 
-    // If the release explicitly names some other episode, reject it.
     if (/s\d{1,2}e\d{1,3}|(?:^|\D)\d{1,2}x\d{1,3}(?:\D|$)/i.test(raw)) {
       return false;
     }
   }
 
-  // Season packs are valid because the existing debrid pipeline can select
-  // the requested episode from the pack after the torrent is resolved.
   const seasonPackPatterns = [
     new RegExp(`s0*${seasonText}(?:\\D|$)`, 'i'),
     new RegExp(`season[ ._-]*0*${seasonText}(?:\\D|$)`, 'i'),
@@ -314,7 +316,7 @@ function deduplicate(candidates: TorrentCandidate[]): UnprocessedTorrent[] {
 export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> {
   readonly id = 'master-native';
   readonly name = 'Master Native';
-  readonly version = '1.2.2';
+  readonly version = '1.3.0';
   readonly logger = logger;
 
   constructor(userData: MasterNativeAddonConfig, clientIp?: string) {
@@ -347,6 +349,9 @@ export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> 
       withProviderBudget('TorrentGalaxy', searchTorrentGalaxy(query, parsedId.mediaType)),
       withProviderBudget('TorrentDownloads', searchTorrentDownloads(query, parsedId.mediaType)),
       withProviderBudget('TheRarBG', searchTheRarBG(query, parsedId.mediaType)),
+      withProviderBudget('KickassTorrents', searchKickass(query)),
+      withProviderBudget('MagnetDL', searchMagnetDL(query, parsedId.mediaType)),
+      withProviderBudget('Rutor', searchRutor(query)),
     ];
     if (parsedId.mediaType === 'movie') {
       tasks.push(withProviderBudget('YTS', searchYts(imdbId)));
@@ -356,6 +361,8 @@ export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> 
     }
     if (parsedId.mediaType === 'series' || parsedId.mediaType === 'anime') {
       tasks.push(withProviderBudget('SubsPlease', searchSubsPlease(title, episode)));
+      tasks.push(withProviderBudget('Nyaa', searchNyaa(query)));
+      tasks.push(withProviderBudget('TokyoTosho', searchTokyoTosho(query)));
     }
 
     const started = Date.now();
