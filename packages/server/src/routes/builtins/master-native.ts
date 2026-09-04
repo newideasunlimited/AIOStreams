@@ -6,6 +6,8 @@ import {
   encodeAdultId,
   fetchAdultCatalog,
   resolveAdultItem,
+  resolveAdultDirectStreams,
+  MASTER_ADULT_GENRES,
   MASTER_ADULT_CATALOG_ID,
   MASTER_ADULT_ID_PREFIX,
   config as appConfig,
@@ -40,15 +42,20 @@ function posterUrl(id: string): string | undefined {
 
 function adultMeta(item: AdultTorrentItem) {
   const id = encodeAdultId(item);
+  const fallbackDescription = `${item.indexer}${item.seeders ? ` • ${item.seeders} seeders` : ''}${
+    item.size ? ` • ${(item.size / 1024 ** 3).toFixed(2)} GB` : ''
+  }`;
   return {
     id,
     type: 'movie',
     name: item.title,
-    description: `${item.indexer}${item.seeders ? ` • ${item.seeders} seeders` : ''}${
-      item.size ? ` • ${(item.size / 1024 ** 3).toFixed(2)} GB` : ''
-    }`,
+    description: item.description || fallbackDescription,
     poster: item.poster || posterUrl(id),
-    posterShape: 'poster',
+    background: item.poster,
+    posterShape: item.poster ? 'landscape' : 'poster',
+    genres: item.tags ?? [],
+    runtime: item.duration,
+    website: item.detailUrl,
     behaviorHints: { adult: true },
   };
 }
@@ -64,12 +71,7 @@ function parseAdultExtras(extra?: string) {
 
 async function getAdultCatalog(extra?: string) {
   const { skip, search, genre } = parseAdultExtras(extra);
-  let items = await fetchAdultCatalog(search, genre, skip);
-
-  if (!search && items.length === 0) {
-    items = await fetchAdultCatalog('XXX', genre, skip);
-  }
-
+  const items = await fetchAdultCatalog(search, genre, skip);
   return items.map(adultMeta);
 }
 
@@ -82,7 +84,20 @@ function getStremioManifest(addon: MasterNativeAddon) {
     ))],
     catalogs: (manifest.catalogs ?? []).map((catalog) =>
       catalog.id === MASTER_ADULT_CATALOG_ID
-        ? { ...catalog, type: 'movie', name: 'Porn' }
+        ? {
+            ...catalog,
+            type: 'movie',
+            name: 'Porn',
+            extra: [
+              { name: 'skip' },
+              { name: 'search' },
+              {
+                name: 'genre',
+                options: [...MASTER_ADULT_GENRES],
+                isRequired: false,
+              },
+            ],
+          }
         : catalog
     ),
     resources: manifest.resources.map((resource) => {
@@ -211,6 +226,28 @@ router.get(
         const item = decodeAdultId(id);
         if (!item) {
           res.json({ streams: [] });
+          return;
+        }
+
+        if (item.sourceKind === 'direct') {
+          const directStreams = await resolveAdultDirectStreams(item);
+          const streams = directStreams.map((stream) => ({
+            name: `Master • ${stream.name}`,
+            title: item.title,
+            url: stream.url,
+            behaviorHints: {
+              notWebReady: true,
+              bingeGroup: `master-adult-direct-${item.indexer}-${item.sourceId || 'video'}`,
+              proxyHeaders: {
+                request: {
+                  'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+                  ...(stream.referer ? { Referer: stream.referer } : {}),
+                },
+              },
+            },
+          }));
+          res.json({ streams });
           return;
         }
 
