@@ -41,6 +41,7 @@ type TorrentCandidate = {
 };
 
 const PROVIDER_TIMEOUT_MS = 4500;
+const PROVIDER_BUDGET_MS = 2500;
 
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, {
@@ -74,6 +75,42 @@ function buildQuery(
     return `${base} S${s}`;
   }
   return year ? `${base} ${year}` : base;
+}
+
+function withProviderBudget<T>(
+  name: string,
+  promise: Promise<T[]>
+): Promise<T[]> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      logger.debug('Master native provider budget exhausted', {
+        provider: name,
+        budgetMs: PROVIDER_BUDGET_MS,
+      });
+      resolve([]);
+    }, PROVIDER_BUDGET_MS);
+
+    promise
+      .then((value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        logger.warn('Master native provider failed', {
+          provider: name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        resolve([]);
+      });
+  });
 }
 
 async function searchYts(imdbId: string | undefined): Promise<TorrentCandidate[]> {
@@ -205,7 +242,7 @@ function deduplicate(candidates: TorrentCandidate[]): UnprocessedTorrent[] {
 export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> {
   readonly id = 'master-native';
   readonly name = 'Master Native';
-  readonly version = '1.2.0';
+  readonly version = '1.2.1';
   readonly logger = logger;
 
   constructor(userData: MasterNativeAddonConfig, clientIp?: string) {
@@ -229,44 +266,37 @@ export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> 
     const query = buildQuery(title, metadata.year, parsedId.mediaType, season, episode);
 
     const tasks: Array<Promise<TorrentCandidate[]>> = [
-      searchPirateBay(query, parsedId.mediaType),
-      searchBitsearch(query),
-      searchBT4G(query),
-      searchBTDig(query),
-      search1337x(query, parsedId.mediaType),
-      searchGloTorrents(query, parsedId.mediaType),
-      searchTorrentGalaxy(query, parsedId.mediaType),
-      searchTorrentDownloads(query, parsedId.mediaType),
-      searchTheRarBG(query, parsedId.mediaType),
+      withProviderBudget('ThePirateBay', searchPirateBay(query, parsedId.mediaType)),
+      withProviderBudget('Bitsearch', searchBitsearch(query)),
+      withProviderBudget('BT4G', searchBT4G(query)),
+      withProviderBudget('BTDig', searchBTDig(query)),
+      withProviderBudget('1337x', search1337x(query, parsedId.mediaType)),
+      withProviderBudget('GloTorrents', searchGloTorrents(query, parsedId.mediaType)),
+      withProviderBudget('TorrentGalaxy', searchTorrentGalaxy(query, parsedId.mediaType)),
+      withProviderBudget('TorrentDownloads', searchTorrentDownloads(query, parsedId.mediaType)),
+      withProviderBudget('TheRarBG', searchTheRarBG(query, parsedId.mediaType)),
     ];
-    if (parsedId.mediaType === 'movie') tasks.push(searchYts(imdbId));
-    if (parsedId.mediaType === 'series') tasks.push(searchEztv(imdbId, season, episode));
+    if (parsedId.mediaType === 'movie') {
+      tasks.push(withProviderBudget('YTS', searchYts(imdbId)));
+    }
+    if (parsedId.mediaType === 'series') {
+      tasks.push(withProviderBudget('EZTV', searchEztv(imdbId, season, episode)));
+    }
     if (parsedId.mediaType === 'series' || parsedId.mediaType === 'anime') {
-      tasks.push(searchSubsPlease(title, episode));
+      tasks.push(withProviderBudget('SubsPlease', searchSubsPlease(title, episode)));
     }
 
     const started = Date.now();
-    const settled = await Promise.allSettled(tasks);
-    const candidates: TorrentCandidate[] = [];
-    let failedProviders = 0;
-    for (const result of settled) {
-      if (result.status === 'fulfilled') {
-        candidates.push(...result.value);
-      } else {
-        failedProviders++;
-        logger.warn('Master native provider failed', {
-          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-        });
-      }
-    }
-
+    const groups = await Promise.all(tasks);
+    const candidates = groups.flat();
     const torrents = deduplicate(candidates);
+
     logger.info('Master native search complete', {
       query,
       providers: tasks.length,
-      failedProviders,
       rawResults: candidates.length,
       results: torrents.length,
+      providerBudgetMs: PROVIDER_BUDGET_MS,
       tookMs: Date.now() - started,
     });
     return torrents;
