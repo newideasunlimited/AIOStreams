@@ -1,10 +1,9 @@
 /*
- * Native adult torrent catalog/search providers for Master Add-On.
+ * Native adult catalog/search providers for Master Add-On.
  *
- * Sources are public and resolved locally. PornRips support follows the same
- * catalog-first pattern used by the working GPL reference addon: list scenes,
- * keep their artwork, and resolve the torrent behind each scene into a real
- * info hash before exposing it to Stremio.
+ * PornRips follows the working GPL reference architecture: catalog/meta are
+ * returned from scene listings immediately, while magnet/.torrent resolution
+ * happens lazily only when Stremio requests streams for a selected item.
  */
 
 import parseTorrent from 'parse-torrent';
@@ -13,12 +12,13 @@ export const MASTER_ADULT_ID_PREFIX = 'aiostreams::adult.';
 export const MASTER_ADULT_CATALOG_ID = 'master-adult';
 
 export type AdultTorrentItem = {
-  hash: string;
+  hash?: string;
   title: string;
   seeders: number;
   size: number;
   indexer: string;
   poster?: string;
+  detailUrl?: string;
 };
 
 const TIMEOUT_MS = 7000;
@@ -28,7 +28,7 @@ async function fetchResponse(url: string, referer?: string): Promise<Response> {
   const response = await fetch(url, {
     headers: {
       'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 Master-Addon/1.5',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36 Master-Addon/1.6',
       Accept: 'text/html,application/xhtml+xml,application/xml,application/json;q=0.9,image/webp,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.5',
       ...(referer ? { Referer: referer } : {}),
@@ -83,17 +83,27 @@ function absoluteUrl(value: string, base: string): string {
   }
 }
 
+function itemKey(item: AdultTorrentItem): string {
+  if (item.hash && /^[a-f0-9]{40}$/i.test(item.hash)) return `hash:${item.hash.toLowerCase()}`;
+  if (item.detailUrl) return `url:${item.detailUrl}`;
+  return `title:${item.indexer}:${item.title}`;
+}
+
 function dedupe(items: AdultTorrentItem[]): AdultTorrentItem[] {
-  const byHash = new Map<string, AdultTorrentItem>();
+  const byKey = new Map<string, AdultTorrentItem>();
   for (const item of items) {
-    if (!/^[a-f0-9]{40}$/i.test(item.hash) || !item.title) continue;
-    const key = item.hash.toLowerCase();
-    const current = byHash.get(key);
+    if (!item.title) continue;
+    if (!item.hash && !item.detailUrl) continue;
+    const key = itemKey(item);
+    const current = byKey.get(key);
     if (!current || item.seeders > current.seeders) {
-      byHash.set(key, { ...item, hash: key });
+      byKey.set(key, {
+        ...item,
+        hash: item.hash?.toLowerCase(),
+      });
     }
   }
-  return [...byHash.values()].sort((a, b) => b.seeders - a.seeders);
+  return [...byKey.values()].sort((a, b) => b.seeders - a.seeders);
 }
 
 async function searchPirateBayAdult(search?: string): Promise<AdultTorrentItem[]> {
@@ -197,8 +207,25 @@ function parsePornRipsListings(html: string): PornRipsListing[] {
   return results;
 }
 
-async function resolvePornRipsListing(listing: PornRipsListing): Promise<AdultTorrentItem | null> {
-  const detailHtml = await fetchText(listing.detailUrl, listing.detailUrl);
+async function searchPornRips(search?: string): Promise<AdultTorrentItem[]> {
+  const url = search
+    ? `${PORNRIPS_BASE}/?s=${encodeURIComponent(search)}`
+    : `${PORNRIPS_BASE}/`;
+  const html = await fetchText(url);
+  return parsePornRipsListings(html).slice(0, 40).map((listing) => ({
+    title: listing.title,
+    seeders: 0,
+    size: listing.size,
+    indexer: 'PornRips',
+    poster: listing.poster,
+    detailUrl: listing.detailUrl,
+  }));
+}
+
+async function resolvePornRipsItem(item: AdultTorrentItem): Promise<AdultTorrentItem | null> {
+  if (!item.detailUrl) return null;
+
+  const detailHtml = await fetchText(item.detailUrl, item.detailUrl);
   const magnet = decode(
     detailHtml.match(/href=["'](magnet:\?xt=urn:btih:[^"']+)["']/i)?.[1] ?? ''
   );
@@ -216,13 +243,13 @@ async function resolvePornRipsListing(listing: PornRipsListing): Promise<AdultTo
     let torrentUrl = decode(
       detailHtml.match(/href=["']([^"']+\.torrent(?:\?[^"']*)?)["']/i)?.[1] ?? ''
     );
-    if (torrentUrl) torrentUrl = absoluteUrl(torrentUrl, listing.detailUrl);
+    if (torrentUrl) torrentUrl = absoluteUrl(torrentUrl, item.detailUrl);
     if (!torrentUrl) {
-      torrentUrl = `${PORNRIPS_BASE}/torrents/${encodeURIComponent(listing.title)}.torrent`;
+      torrentUrl = `${PORNRIPS_BASE}/torrents/${encodeURIComponent(item.title)}.torrent`;
     }
 
     try {
-      const torrentResponse = await fetchResponse(torrentUrl, listing.detailUrl);
+      const torrentResponse = await fetchResponse(torrentUrl, item.detailUrl);
       const buffer = Buffer.from(await torrentResponse.arrayBuffer());
       hash = (await parseTorrent(buffer)).infoHash?.toLowerCase() ?? '';
     } catch {
@@ -231,26 +258,15 @@ async function resolvePornRipsListing(listing: PornRipsListing): Promise<AdultTo
   }
 
   if (!/^[a-f0-9]{40}$/i.test(hash)) return null;
-  return {
-    hash,
-    title: listing.title,
-    seeders: 0,
-    size: listing.size,
-    indexer: 'PornRips',
-    poster: listing.poster,
-  };
+  return { ...item, hash };
 }
 
-async function searchPornRips(search?: string): Promise<AdultTorrentItem[]> {
-  const url = search
-    ? `${PORNRIPS_BASE}/?s=${encodeURIComponent(search)}`
-    : `${PORNRIPS_BASE}/`;
-  const html = await fetchText(url);
-  const listings = parsePornRipsListings(html).slice(0, 20);
-  const settled = await Promise.allSettled(listings.map(resolvePornRipsListing));
-  return settled.flatMap((result) =>
-    result.status === 'fulfilled' && result.value ? [result.value] : []
-  );
+export async function resolveAdultItem(item: AdultTorrentItem): Promise<AdultTorrentItem | null> {
+  if (item.hash && /^[a-f0-9]{40}$/i.test(item.hash)) {
+    return { ...item, hash: item.hash.toLowerCase() };
+  }
+  if (item.indexer === 'PornRips') return resolvePornRipsItem(item);
+  return null;
 }
 
 export async function fetchAdultCatalog(
@@ -293,6 +309,7 @@ export function encodeAdultId(item: AdultTorrentItem): string {
       i: item.indexer,
       n: item.seeders,
       p: item.poster,
+      u: item.detailUrl,
     }),
     'utf8'
   ).toString('base64url');
@@ -304,15 +321,18 @@ export function decodeAdultId(id: string): AdultTorrentItem | null {
   try {
     const payload = JSON.parse(
       Buffer.from(id.slice(MASTER_ADULT_ID_PREFIX.length), 'base64url').toString('utf8')
-    ) as { h?: string; t?: string; s?: number; i?: string; n?: number; p?: string };
-    if (!payload.h || !/^[a-f0-9]{40}$/i.test(payload.h) || !payload.t) return null;
+    ) as { h?: string; t?: string; s?: number; i?: string; n?: number; p?: string; u?: string };
+    if (!payload.t) return null;
+    if (payload.h && !/^[a-f0-9]{40}$/i.test(payload.h)) return null;
+    if (!payload.h && !payload.u) return null;
     return {
-      hash: payload.h.toLowerCase(),
+      hash: payload.h?.toLowerCase(),
       title: payload.t,
       size: Number(payload.s ?? 0),
       indexer: payload.i ?? 'Adult',
       seeders: Number(payload.n ?? 0),
       poster: payload.p,
+      detailUrl: payload.u,
     };
   } catch {
     return null;
