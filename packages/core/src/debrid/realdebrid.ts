@@ -178,85 +178,26 @@ export class RealDebridService implements TorrentDebridService {
     checkOwned: boolean = true
   ): Promise<DebridDownload[]> {
     const hashes = [...new Set(magnets.map((hash) => hash.toLowerCase()))];
-    if (hashes.length === 0) return [];
+    if (hashes.length === 0 || !checkOwned) return [];
 
-    const library = checkOwned ? await this.listMagnets() : [];
-    const byHash = new Map(
-      library.filter((item) => item.hash).map((item) => [item.hash!, item])
+    // Real-Debrid no longer exposes a supported bulk instant-availability API.
+    // Do not add/select/inspect/delete every search result just to classify it:
+    // that turns one Stremio browse into hundreds of RD requests and immediately
+    // trips the upstream rate limit. Only identify torrents already present in
+    // the user's RD library. Unowned hashes remain "unknown" and are still
+    // surfaced by AIOStreams; they are added to RD only if the user selects one.
+    const library = await this.listMagnets();
+    const wanted = new Set(hashes);
+    const owned = library.filter(
+      (item) => item.hash && wanted.has(item.hash.toLowerCase())
     );
 
-    const results = await Promise.all(
-      hashes.map(async (hash): Promise<DebridDownload> => {
-        const owned = byHash.get(hash);
-        if (owned) {
-          try {
-            const info = await this.getInfo(String(owned.id));
-            const mapped = this.toDownload(info, info.status === 'downloaded');
-            mapped.library = true;
-            return mapped;
-          } catch (error) {
-            logger.warn('Failed to inspect existing Real-Debrid torrent', {
-              hash,
-              error: (error as Error).message,
-            });
-            return owned;
-          }
-        }
-
-        let addedId: string | undefined;
-        try {
-          const added = await this.request<{ id: string }>('/torrents/addMagnet', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: this.form({ magnet: `magnet:?xt=urn:btih:${hash}` }),
-          });
-          addedId = added?.id;
-          if (!addedId) {
-            return { id: -1, hash, status: 'unknown', files: [] };
-          }
-
-          await this.request<unknown>(`/torrents/selectFiles/${encodeURIComponent(addedId)}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: this.form({ files: 'all' }),
-          });
-
-          const info = await this.getInfo(addedId);
-          if (info.status === 'downloaded') {
-            return this.toDownload(info, true);
-          }
-
-          await this.removeMagnet(addedId).catch(() => {});
-          return {
-            id: -1,
-            hash,
-            status: mapStatus(info.status),
-            size: info.bytes,
-            files: (info.files ?? []).map((file, index) => ({
-              id: file.id,
-              name: (file.path ?? '').replace(/^\//, ''),
-              path: file.path,
-              size: file.bytes ?? 0,
-              index,
-            })),
-          };
-        } catch (error) {
-          if (addedId) await this.removeMagnet(addedId).catch(() => {});
-          if (error instanceof DebridError && error.code === 'UNAUTHORIZED') throw error;
-          logger.debug('Real-Debrid cache probe failed', {
-            hash,
-            error: (error as Error).message,
-          });
-          return { id: -1, hash, status: 'unknown', files: [] };
-        }
-      })
-    );
-
-    logger.info('Real-Debrid native cache check complete', {
+    logger.info('Real-Debrid lightweight ownership check complete', {
       checked: hashes.length,
-      cached: results.filter((item) => item.status === 'cached').length,
+      owned: owned.length,
+      apiRequests: 1,
     });
-    return results;
+    return owned;
   }
 
   async addMagnet(magnet: string): Promise<DebridDownload> {
