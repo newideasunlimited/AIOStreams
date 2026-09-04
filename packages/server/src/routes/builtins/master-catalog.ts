@@ -5,6 +5,7 @@ import {
   fetchAdultCatalog,
   fromUrlSafeBase64,
   MASTER_ADULT_ID_PREFIX,
+  type AdultTorrentItem,
 } from '@aiostreams/core';
 
 const router: Router = Router();
@@ -42,7 +43,7 @@ router.get(
 
       res.json({
         id: 'com.newideasunlimited.master.catalogs',
-        version: '1.1.0',
+        version: '1.1.1',
         name: 'Master Add-On',
         description: 'Porn catalog served by the self-hosted Master Add-On.',
         resources: ['catalog', 'meta'],
@@ -91,7 +92,7 @@ router.get(
       const items = await fetchAdultCatalog(search, genre, skip);
 
       res.json({
-        metas: items.map((item) => ({
+        metas: items.map((item: AdultTorrentItem) => ({
           id: encodeAdultId(item),
           type: 'movie',
           name: item.title,
