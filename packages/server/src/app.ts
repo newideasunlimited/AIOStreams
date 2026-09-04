@@ -51,6 +51,7 @@ import {
   torrentGalaxy,
   seadex,
   easynews,
+  masterNative,
   library,
 } from './routes/builtins/index.js';
 import {
@@ -276,6 +277,7 @@ builtinsRouter.use('/therarbg', therarbg);
 builtinsRouter.use('/torrent-galaxy', torrentGalaxy);
 builtinsRouter.use('/seadex', seadex);
 builtinsRouter.use('/easynews', easynews);
+builtinsRouter.use('/master-native', masterNative);
 builtinsRouter.use('/library', library);
 app.use('/builtins', builtinsRouter);
 
