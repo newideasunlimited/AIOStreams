@@ -5,6 +5,7 @@ export * from './torbox.js';
 export * from './nzbdav.js';
 export * from './altmount.js';
 export * from './aiostreams.js';
+export * from './realdebrid.js';
 
 import {
   appConfig,
@@ -16,6 +17,7 @@ import {
 import { DebridService, DebridServiceConfig, DebridError } from './base.js';
 import { StremThruService } from './stremthru.js';
 import { TorboxDebridService } from './torbox.js';
+import { RealDebridService } from './realdebrid.js';
 import { StremThruPreset } from '../presets/stremthru.js';
 import { NzbDAVService } from './nzbdav.js';
 import { AltmountService } from './altmount.js';
@@ -43,6 +45,11 @@ export function getDebridService(
   );
 
   switch (serviceName) {
+    case constants.REALDEBRID_SERVICE:
+      // Real-Debrid native path: use the API token directly instead of routing
+      // through StremThru. This keeps the existing AIOStreams debrid pipeline
+      // intact while avoiding an unnecessary auth/proxy hop.
+      return new RealDebridService(config);
     case 'torbox':
       if (appConfig.builtins.stremthru.torboxUsenetViaStremthru) {
         return new StremThruService({
