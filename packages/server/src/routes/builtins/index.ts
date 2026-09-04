@@ -13,6 +13,7 @@ export { default as therarbg } from './therarbg.js';
 export { default as torrentGalaxy } from './torrent-galaxy.js';
 export { default as seadex } from './seadex.js';
 export { default as easynews } from './easynews.js';
+export { default as masterNative } from './master-native.js';
 
 const library: Router = express.Router();
 library.use('/master-catalog', masterCatalogRouter);
