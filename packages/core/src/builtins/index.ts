@@ -11,3 +11,4 @@ export * from './torrent-galaxy/index.js';
 export * from './seadex/index.js';
 export * from './easynews-search/index.js';
 export * from './library/index.js';
+export * from './master-native/index.js';
