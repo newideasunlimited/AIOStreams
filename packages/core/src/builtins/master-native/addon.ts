@@ -9,10 +9,28 @@ import { z } from 'zod';
 import {
   BaseDebridAddon,
   BaseDebridConfigSchema,
+  SearchMetadata,
 } from '../base/debrid.js';
-import { NZB, UnprocessedTorrent } from '../../debrid/utils.js';
-import { createLogger, ParsedId } from '../../utils/index.js';
-import { validateInfoHash } from '../utils/debrid.js';
+import {
+  NZB,
+  UnprocessedTorrent,
+} from '../../debrid/utils.js';
+import {
+  Torrent,
+  TitleMetadata,
+  fileInfoStore,
+  metadataStore,
+} from '../../debrid/index.js';
+import {
+  BuiltinServiceId,
+  createLogger,
+  encryptString,
+  getSimpleTextHash,
+  ParsedId,
+} from '../../utils/index.js';
+import { config as appConfig } from '../../config/index.js';
+import { Manifest, Meta, MetaPreview, Stream } from '../../db/schemas.js';
+import { processTorrents, validateInfoHash } from '../utils/debrid.js';
 import {
   searchBitsearch,
   searchBT4G,
@@ -33,6 +51,13 @@ import {
   searchRutor,
   searchTokyoTosho,
 } from './providers-torrentio.js';
+import {
+  decodeAdultId,
+  encodeAdultId,
+  fetchAdultCatalog,
+  MASTER_ADULT_CATALOG_ID,
+  MASTER_ADULT_ID_PREFIX,
+} from './providers-adult.js';
 
 const logger = createLogger('master-native');
 
@@ -316,11 +341,187 @@ function deduplicate(candidates: TorrentCandidate[]): UnprocessedTorrent[] {
 export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> {
   readonly id = 'master-native';
   readonly name = 'Master Native';
-  readonly version = '1.3.0';
+  readonly version = '1.4.0';
   readonly logger = logger;
 
   constructor(userData: MasterNativeAddonConfig, clientIp?: string) {
     super(userData, MasterNativeAddonConfigSchema, clientIp);
+  }
+
+  public override getManifest(): Manifest {
+    const baseManifest = super.getManifest();
+    return {
+      ...baseManifest,
+      description: 'Master native movie, TV, anime and adult source engine',
+      types: [...(baseManifest.types ?? []), 'adult'],
+      catalogs: [
+        ...(baseManifest.catalogs ?? []),
+        {
+          type: 'adult',
+          id: MASTER_ADULT_CATALOG_ID,
+          name: 'Master Adult',
+          extra: [
+            { name: 'skip' },
+            { name: 'search' },
+            {
+              name: 'genre',
+              options: ['Latest', 'VR', 'JAV'],
+              isRequired: false,
+            },
+          ],
+        },
+      ],
+      resources: [
+        ...baseManifest.resources,
+        {
+          name: 'catalog',
+          types: ['adult'],
+          idPrefixes: [MASTER_ADULT_CATALOG_ID],
+        },
+        {
+          name: 'meta',
+          types: ['adult'],
+          idPrefixes: [MASTER_ADULT_ID_PREFIX],
+        },
+        {
+          name: 'stream',
+          types: ['adult'],
+          idPrefixes: [MASTER_ADULT_ID_PREFIX],
+        },
+      ],
+    };
+  }
+
+  public async getCatalog(
+    type: string,
+    catalogId: string,
+    extras?: string
+  ): Promise<MetaPreview[]> {
+    if (type !== 'adult' || catalogId !== MASTER_ADULT_CATALOG_ID) {
+      throw new Error(`Unsupported catalog: ${type}/${catalogId}`);
+    }
+
+    const params = new URLSearchParams(extras ?? '');
+    const skip = Math.max(0, Number(params.get('skip') ?? 0) || 0);
+    const search = params.get('search') || undefined;
+    const genre = params.get('genre') || undefined;
+    const items = await fetchAdultCatalog(search, genre, skip);
+
+    return items.map((item) => ({
+      id: encodeAdultId(item),
+      type: 'adult',
+      name: item.title,
+      description: `${item.indexer} • ${item.seeders} seeders${item.size ? ` • ${(item.size / 1024 ** 3).toFixed(2)} GB` : ''}`,
+      posterShape: 'landscape',
+    }));
+  }
+
+  public async getMeta(type: string, id: string): Promise<Meta> {
+    if (type !== 'adult') {
+      throw new Error(`Unsupported meta type: ${type}`);
+    }
+    const item = decodeAdultId(id);
+    if (!item) throw new Error(`Unsupported adult ID: ${id}`);
+
+    return {
+      id,
+      type: 'adult',
+      name: item.title,
+      description: `${item.indexer} • ${item.seeders} seeders${item.size ? ` • ${(item.size / 1024 ** 3).toFixed(2)} GB` : ''}`,
+      posterShape: 'landscape',
+      videos: [],
+      behaviorHints: {},
+    };
+  }
+
+  public override async getStreams(type: string, id: string): Promise<Stream[]> {
+    if (type !== 'adult' || !id.startsWith(MASTER_ADULT_ID_PREFIX)) {
+      return super.getStreams(type, id);
+    }
+
+    const item = decodeAdultId(id);
+    if (!item) throw new Error(`Unsupported adult ID: ${id}`);
+
+    const torrentServices = this.userData.services.filter(
+      (service) =>
+        ![
+          'nzbdav',
+          'altmount',
+          'stremio_nntp',
+          'stremthru_newz',
+          'aiostreams',
+        ].includes(service.id)
+    );
+    if (torrentServices.length === 0) {
+      return [
+        this._createErrorStream({
+          title: this.name,
+          description: 'No torrent debrid service configured for adult playback.',
+        }),
+      ];
+    }
+
+    const candidate: Torrent = {
+      confirmed: true,
+      hash: item.hash,
+      downloadUrl: undefined,
+      sources: [],
+      indexer: item.indexer,
+      seeders: item.seeders,
+      title: item.title,
+      size: item.size,
+      type: 'torrent',
+    };
+    const searchMetadata: SearchMetadata = {
+      primaryTitle: item.title,
+      titles: [item.title],
+    };
+
+    const processed = await processTorrents(
+      [candidate],
+      torrentServices,
+      id,
+      searchMetadata,
+      this.clientIp,
+      this.userData.checkOwned
+    );
+
+    const titleMetadata: TitleMetadata = { titles: [item.title] };
+    const metadataId = getSimpleTextHash(JSON.stringify(titleMetadata));
+    await metadataStore().set(
+      metadataId,
+      titleMetadata,
+      appConfig.builtins.debrid.playbackLinkValidity,
+      true
+    );
+
+    const encryptedStoreAuths = torrentServices.reduce(
+      (acc, service) => {
+        const auth = { id: service.id, credential: service.credential };
+        acc[service.id] = encryptString(JSON.stringify(auth)).data ?? '';
+        return acc;
+      },
+      {} as Record<BuiltinServiceId, string | string[]>
+    );
+
+    let streams = await Promise.all(
+      processed.results.map((result) =>
+        this._createStream(result, metadataId, encryptedStoreAuths)
+      )
+    );
+    const serviceIds = processed.results.map((result) => result.service?.id);
+    await fileInfoStore()?.flush();
+    const proxied = await this._applyServiceProxying(streams, serviceIds);
+    streams = proxied.streams;
+
+    const errors = processed.errors.map((error) =>
+      this._createErrorStream({
+        title: this.name,
+        description: error.error.message,
+      })
+    );
+
+    return [...streams, ...proxied.errorStreams, ...errors];
   }
 
   protected async _searchNzbs(_parsedId: ParsedId): Promise<NZB[]> {
