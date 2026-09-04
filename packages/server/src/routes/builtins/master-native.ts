@@ -2,12 +2,16 @@ import { Router, Request, Response, NextFunction } from 'express';
 import {
   MasterNativeAddon,
   fromUrlSafeBase64,
+  decodeAdultId,
+  encodeAdultId,
+  fetchAdultCatalog,
+  MASTER_ADULT_CATALOG_ID,
+  MASTER_ADULT_ID_PREFIX,
+  config as appConfig,
+  type AdultTorrentItem,
 } from '@aiostreams/core';
 
 const router: Router = Router();
-
-const MASTER_ADULT_CATALOG_ID = 'master-adult';
-const MASTER_ADULT_ID_PREFIX = 'aiostreams::adult.';
 
 interface ManifestParams {
   encodedConfig?: string;
@@ -22,12 +26,55 @@ function createAddon(encodedConfig: string | undefined, clientIp?: string) {
   );
 }
 
-/**
- * Stremio's UI does not consistently surface arbitrary custom content types.
- * Master keeps adult as a distinct internal type, but advertises the catalog
- * as `movie` so it appears as a normal home/discover row. Requests for the
- * Master adult catalog/IDs are translated back to the internal adult type.
- */
+function publicBaseUrl(): string {
+  return appConfig.bootstrap.baseUrl?.replace(/\/$/, '') || '';
+}
+
+function posterUrl(id: string): string | undefined {
+  const base = publicBaseUrl();
+  return base
+    ? `${base}/builtins/master-native/poster/${encodeURIComponent(id)}.svg`
+    : undefined;
+}
+
+function adultMeta(item: AdultTorrentItem) {
+  const id = encodeAdultId(item);
+  return {
+    id,
+    type: 'movie',
+    name: item.title,
+    description: `${item.indexer} • ${item.seeders} seeders${
+      item.size ? ` • ${(item.size / 1024 ** 3).toFixed(2)} GB` : ''
+    }`,
+    poster: posterUrl(id),
+    posterShape: 'poster',
+    behaviorHints: { adult: true },
+  };
+}
+
+function parseAdultExtras(extra?: string) {
+  const params = new URLSearchParams(extra ?? '');
+  return {
+    skip: Math.max(0, Number(params.get('skip') ?? 0) || 0),
+    search: params.get('search') || undefined,
+    genre: params.get('genre') || undefined,
+  };
+}
+
+async function getAdultCatalog(extra?: string) {
+  const { skip, search, genre } = parseAdultExtras(extra);
+  let items = await fetchAdultCatalog(search, genre, skip);
+
+  // The TPB top-list endpoint is intermittently unavailable even when search
+  // works. Keep Home populated by falling back to a normal adult-category
+  // search instead of returning a dead catalog.
+  if (!search && items.length === 0) {
+    items = await fetchAdultCatalog('XXX', genre, skip);
+  }
+
+  return items.map(adultMeta);
+}
+
 function getStremioManifest(addon: MasterNativeAddon) {
   const manifest = addon.getManifest();
   return {
@@ -48,13 +95,12 @@ function getStremioManifest(addon: MasterNativeAddon) {
         types: resource.types.map((type) => type === 'adult' ? 'movie' : type),
       };
     }),
+    behaviorHints: {
+      ...(manifest.behaviorHints ?? {}),
+      adult: true,
+      p2p: true,
+    },
   };
-}
-
-function toStremioMetaType<T extends { id: string; type: string }>(item: T): T {
-  return item.id.startsWith(MASTER_ADULT_ID_PREFIX)
-    ? { ...item, type: 'movie' }
-    : item;
 }
 
 router.get(
@@ -93,10 +139,14 @@ router.get(
   ) => {
     const { encodedConfig, type, id } = req.params;
     try {
+      if (id === MASTER_ADULT_CATALOG_ID) {
+        res.json({ metas: await getAdultCatalog() });
+        return;
+      }
+
       const addon = createAddon(encodedConfig, req.userIp);
-      const internalType = id === MASTER_ADULT_CATALOG_ID ? 'adult' : type;
-      const metas = await addon.getCatalog(internalType, id);
-      res.json({ metas: metas.map(toStremioMetaType) });
+      const metas = await addon.getCatalog(type, id);
+      res.json({ metas });
     } catch (error) {
       next(error);
     }
@@ -112,10 +162,14 @@ router.get(
   ) => {
     const { encodedConfig, type, id, extra } = req.params;
     try {
+      if (id === MASTER_ADULT_CATALOG_ID) {
+        res.json({ metas: await getAdultCatalog(extra) });
+        return;
+      }
+
       const addon = createAddon(encodedConfig, req.userIp);
-      const internalType = id === MASTER_ADULT_CATALOG_ID ? 'adult' : type;
-      const metas = await addon.getCatalog(internalType, id, extra);
-      res.json({ metas: metas.map(toStremioMetaType) });
+      const metas = await addon.getCatalog(type, id, extra);
+      res.json({ metas });
     } catch (error) {
       next(error);
     }
@@ -131,10 +185,15 @@ router.get(
   ) => {
     const { encodedConfig, type, id } = req.params;
     try {
+      if (id.startsWith(MASTER_ADULT_ID_PREFIX)) {
+        const item = decodeAdultId(id);
+        res.json({ meta: item ? adultMeta(item) : null });
+        return;
+      }
+
       const addon = createAddon(encodedConfig, req.userIp);
-      const internalType = id.startsWith(MASTER_ADULT_ID_PREFIX) ? 'adult' : type;
-      const meta = await addon.getMeta(internalType, id);
-      res.json({ meta: toStremioMetaType(meta) });
+      const meta = await addon.getMeta(type, id);
+      res.json({ meta });
     } catch (error) {
       next(error);
     }
@@ -150,14 +209,86 @@ router.get(
   ) => {
     const { encodedConfig, type, id } = req.params;
     try {
+      if (id.startsWith(MASTER_ADULT_ID_PREFIX)) {
+        const item = decodeAdultId(id);
+        if (!item) {
+          res.json({ streams: [] });
+          return;
+        }
+
+        const addon = createAddon(encodedConfig, req.userIp);
+        let debridStreams: any[] = [];
+        try {
+          debridStreams = await addon.getStreams('adult', id);
+        } catch {
+          debridStreams = [];
+        }
+
+        // Always include a native Stremio torrent stream so adult playback does
+        // not depend on any paid debrid provider. Existing debrid results are
+        // still kept when the user has one configured.
+        const directStream = {
+          name: 'Master • Direct Torrent',
+          title: `${item.title}\n${item.indexer} • ${item.seeders} seeders`,
+          infoHash: item.hash,
+          behaviorHints: {
+            bingeGroup: `master-adult-${item.hash}`,
+          },
+        };
+
+        res.json({ streams: [directStream, ...debridStreams] });
+        return;
+      }
+
       const addon = createAddon(encodedConfig, req.userIp);
-      const internalType = id.startsWith(MASTER_ADULT_ID_PREFIX) ? 'adult' : type;
-      const streams = await addon.getStreams(internalType, id);
+      const streams = await addon.getStreams(type, id);
       res.json({ streams });
     } catch (error) {
       next(error);
     }
   }
 );
+
+router.get('/poster/:id.svg', (req: Request, res: Response) => {
+  const id = decodeURIComponent(req.params.id || '');
+  const item = decodeAdultId(id);
+  const title = (item?.title || 'Adult').slice(0, 110);
+  const escaped = title
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  const words = escaped.split(/\s+/);
+  const lines: string[] = [];
+  let current = '';
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (next.length > 24 && current) {
+      lines.push(current);
+      current = word;
+      if (lines.length === 4) break;
+    } else {
+      current = next;
+    }
+  }
+  if (current && lines.length < 5) lines.push(current);
+
+  const tspans = lines
+    .map((line, index) => `<tspan x="300" dy="${index === 0 ? 0 : 52}">${line}</tspan>`)
+    .join('');
+
+  res.type('image/svg+xml').send(`
+    <svg xmlns="http://www.w3.org/2000/svg" width="600" height="900" viewBox="0 0 600 900">
+      <rect width="600" height="900" fill="#171722"/>
+      <rect x="36" y="36" width="528" height="828" rx="28" fill="#242435"/>
+      <text x="300" y="165" text-anchor="middle" font-family="sans-serif" font-size="34" font-weight="700" fill="#ffffff">MASTER</text>
+      <text x="300" y="220" text-anchor="middle" font-family="sans-serif" font-size="25" fill="#b8b8c8">ADULT</text>
+      <text x="300" y="410" text-anchor="middle" font-family="sans-serif" font-size="31" fill="#ffffff">${tspans}</text>
+      <text x="300" y="805" text-anchor="middle" font-family="sans-serif" font-size="20" fill="#9c9caf">${item?.indexer || 'Local source'}</text>
+    </svg>
+  `);
+});
 
 export default router;
