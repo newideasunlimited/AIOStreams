@@ -64,11 +64,6 @@ import {
   linkedAccountsRateLimiter,
   communityApiRateLimiter,
   internalMiddleware,
-  stremioStreamRateLimiter,
-  stremioManifestRateLimiter,
-  stremioMetaRateLimiter,
-  stremioCatalogRateLimiter,
-  stremioSubtitleRateLimiter,
   requireSessionIfAuthRequired,
 } from './middlewares/index.js';
 import { isTrustedIp } from './middlewares/ip.js';
@@ -104,10 +99,6 @@ export enum StaticFiles {
   OK = '200.mp4',
 }
 
-/**
- * Map a DebridError code to the fallback video served in its place. Playback
- * endpoints answer a player, so a failure has to be watchable to be legible.
- */
 export function mapDebridErrorToStaticFile(code: string | undefined): string {
   switch (code) {
     case 'UNAVAILABLE_FOR_LEGAL_REASONS':
@@ -130,7 +121,7 @@ export function mapDebridErrorToStaticFile(code: string | undefined): string {
     case 'DOWNLOAD_FAILED':
     case 'BAD_GATEWAY':
     case 'GONE':
-      return StaticFiles.DOWNLOAD_FAILED;
+      return StaticFiles.DOWNLOADING;
     case 'NO_MATCHING_FILE':
       return StaticFiles.NO_MATCHING_FILE;
     case 'SERVICE_UNAVAILABLE':
@@ -150,7 +141,6 @@ export const staticRoot = path.join(__dirname, './static');
 
 app.use(ipMiddleware);
 app.use(loggerMiddleware);
-// Built on the first request: runtime settings are not loaded at module load.
 let jsonParser: express.RequestHandler | undefined;
 app.use((req, res, next) => {
   jsonParser ??= express.json({ limit: appConfig.api.maxJsonBodySize });
@@ -158,13 +148,11 @@ app.use((req, res, next) => {
 });
 app.use(express.urlencoded({ extended: true }));
 
-// Allow all origins in development for easier testing
 if (appConfig.bootstrap.nodeEnv === 'development') {
   logger.info('CORS enabled for all origins in development');
   app.use(corsMiddleware);
 }
 
-// API Routes
 const apiRouter = express.Router();
 apiRouter.use('/user', userApi);
 apiRouter.use('/profiles', profilesApi);
@@ -209,24 +197,20 @@ apiRouter.use((req, res) => {
 
 app.use(`/api/v${constants.API_VERSION}`, apiRouter);
 
-// Stremio Routes
+// Stremio is a chatty client: one browse/play action can fan out into many
+// manifest/catalog/meta/stream requests, and TV/web/desktop clients can all
+// share one apparent IP behind Cloudflare. This private self-hosted build must
+// never reject normal playback because of AIOStreams' own request counters.
+// Keep auth/API/static protections, but do not rate-limit Stremio resources.
 const stremioRouter = express.Router({ mergeParams: true });
 stremioRouter.use(corsMiddleware);
-// Public routes - no auth needed
-stremioRouter.use('/manifest.json', stremioManifestRateLimiter, manifest);
-stremioRouter.use('/stream', stremioStreamRateLimiter, stream);
+stremioRouter.use('/manifest.json', manifest);
+stremioRouter.use('/stream', stream);
 stremioRouter.use('/configure', requireSessionIfAuthRequired, configure);
-
 stremioRouter.use('/u', alias);
 
-// Protected routes with authentication
 const stremioAuthRouter = express.Router({ mergeParams: true });
 stremioAuthRouter.use(corsMiddleware);
-stremioAuthRouter.use('/manifest.json', stremioManifestRateLimiter);
-stremioAuthRouter.use('/stream', stremioStreamRateLimiter);
-stremioAuthRouter.use('/meta', stremioMetaRateLimiter);
-stremioAuthRouter.use('/catalog', stremioCatalogRateLimiter);
-stremioAuthRouter.use('/subtitles', stremioSubtitleRateLimiter);
 stremioAuthRouter.use(userDataMiddleware);
 stremioAuthRouter.use('/manifest.json', manifest);
 stremioAuthRouter.use('/stream', stream);
@@ -236,22 +220,18 @@ stremioAuthRouter.use('/catalog', catalog);
 stremioAuthRouter.use('/subtitles', subtitle);
 stremioAuthRouter.use('/addon_catalog', addonCatalog);
 
-app.use('/stremio', stremioRouter); // For public routes
-
+app.use('/stremio', stremioRouter);
 app.use(
   `/stremio/:uuid/:encryptedPassword${VARIANT_PATH_ROUTE}`,
   stremioAuthRouter
 );
-app.use('/stremio/:uuid/:encryptedPassword', stremioAuthRouter); // For authenticated routes
+app.use('/stremio/:uuid/:encryptedPassword', stremioAuthRouter);
 
 const chillLinkRouter = express.Router({ mergeParams: true });
 chillLinkRouter.use(corsMiddleware);
-chillLinkRouter.use('/manifest', stremioManifestRateLimiter);
-chillLinkRouter.use('/streams', stremioStreamRateLimiter);
 chillLinkRouter.use(userDataMiddleware);
 chillLinkRouter.use('/manifest', chillLinkManifest);
 chillLinkRouter.use('/streams', chillLinkStreams);
-
 app.use(
   `/chilllink/:uuid/:encryptedPassword${VARIANT_PATH_ROUTE}`,
   chillLinkRouter
@@ -261,7 +241,6 @@ app.use('/chilllink/:uuid/:encryptedPassword', chillLinkRouter);
 const seanimeRouter = express.Router({ mergeParams: true });
 seanimeRouter.use(corsMiddleware);
 seanimeRouter.use(seanimeExtensionsRouter);
-
 app.use('/seanime', seanimeRouter);
 
 const builtinsRouter = express.Router();
@@ -284,10 +263,6 @@ app.use('/builtins', builtinsRouter);
 app.use('/blocklist', publicBlocklistRouter);
 app.use('/community', publicCommunityRouter);
 
-// Content-hashed build assets. These filenames change on every content
-// change, so they are immutable and safe to cache aggressively. Deliberately
-// NOT behind staticRateLimiter: a single page load pulls many of these and
-// rate-limiting them is what caused asset fetch failures + the logo flash.
 app.use(
   '/assets',
   express.static(path.join(frontendRoot, 'assets'), {
@@ -296,8 +271,6 @@ app.use(
   })
 );
 
-// Root-level static files (not content-hashed). Short cache; kept behind the
-// static rate limiter. The logo honours the alternate-design branding flag.
 app.get('/logo.png', staticRateLimiter, (req, res, next) => {
   const filePath = path.resolve(
     frontendRoot,
@@ -329,10 +302,8 @@ app.get(
 
 app.use('/static', corsMiddleware, express.static(staticRoot));
 
-// legacy route handlers
 app.get(
   '{/:config}/stream/:type/:id.json',
-  stremioStreamRateLimiter,
   (req, res) => {
     const baseUrl =
       appConfig.bootstrap.baseUrl ||
@@ -351,7 +322,6 @@ app.get(
   }
 );
 
-// redirect for legacy paths
 app.get('{/:config}/configure', (req, res) => {
   res.redirect('/stremio/configure');
 });
@@ -360,7 +330,6 @@ app.get('/configure', (req, res) => {
   res.redirect('/stremio/configure');
 });
 
-// SPA route validation: returns true for paths that exist in the client-side router.
 const SPA_STATIC_ROUTES = [
   '/',
   '/login',
@@ -381,7 +350,6 @@ function isValidSpaRoute(routePath: string): boolean {
   return SPA_DYNAMIC_PATTERNS.some((pattern) => pattern.test(routePath));
 }
 
-// SPA fallback.
 app.get('*splat', staticRateLimiter, (req, res, next) => {
   if (req.method !== 'GET' || !req.accepts('html')) {
     next();
@@ -399,7 +367,6 @@ app.get('*splat', staticRateLimiter, (req, res, next) => {
   next();
 });
 
-// Error handling middleware should be last
 app.use(errorMiddleware);
 
 export default app;
