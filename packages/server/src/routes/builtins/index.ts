@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import libraryRouter from './library.js';
 import masterCatalogRouter from './master-catalog.js';
 
@@ -14,11 +14,7 @@ export { default as torrentGalaxy } from './torrent-galaxy.js';
 export { default as seadex } from './seadex.js';
 export { default as easynews } from './easynews.js';
 
-// app.ts already mounts `library` at /builtins/library. Keep that stable and
-// hang the Master Add-On's native TMDB catalog router underneath it so the
-// fork gains a self-hosted catalog endpoint without adding another top-level
-// mount point.
-const library = Router();
+const library: Router = express.Router();
 library.use('/master-catalog', masterCatalogRouter);
 library.use('/', libraryRouter);
 
