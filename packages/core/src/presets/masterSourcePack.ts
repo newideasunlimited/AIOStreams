@@ -64,10 +64,10 @@ export class MasterSourcePackPreset extends Preset {
       USER_AGENT: 'Master-Addon',
       SUPPORTED_SERVICES: MasterNativePreset.METADATA.SUPPORTED_SERVICES,
       DESCRIPTION:
-        'Self-hosted Master Add-On source layer for movie, TV, anime and debrid-library streams.',
+        'Self-hosted Master Add-On source layer for movie, TV, anime, adult and debrid-library streams.',
       OPTIONS: options,
       SUPPORTED_STREAM_TYPES: [constants.DEBRID_STREAM_TYPE],
-      SUPPORTED_RESOURCES: [constants.STREAM_RESOURCE],
+      SUPPORTED_RESOURCES: [constants.STREAM_RESOURCE, 'catalog', 'meta'],
       BUILTIN: true,
     };
   }
