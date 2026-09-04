@@ -18,6 +18,14 @@ import {
   searchBT4G,
   searchBTDig,
 } from './providers-extra.js';
+import {
+  search1337x,
+  searchGloTorrents,
+  searchSubsPlease,
+  searchTheRarBG,
+  searchTorrentDownloads,
+  searchTorrentGalaxy,
+} from './providers-tier1.js';
 
 const logger = createLogger('master-native');
 
@@ -197,7 +205,7 @@ function deduplicate(candidates: TorrentCandidate[]): UnprocessedTorrent[] {
 export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> {
   readonly id = 'master-native';
   readonly name = 'Master Native';
-  readonly version = '1.1.0';
+  readonly version = '1.2.0';
   readonly logger = logger;
 
   constructor(userData: MasterNativeAddonConfig, clientIp?: string) {
@@ -225,9 +233,17 @@ export class MasterNativeAddon extends BaseDebridAddon<MasterNativeAddonConfig> 
       searchBitsearch(query),
       searchBT4G(query),
       searchBTDig(query),
+      search1337x(query, parsedId.mediaType),
+      searchGloTorrents(query, parsedId.mediaType),
+      searchTorrentGalaxy(query, parsedId.mediaType),
+      searchTorrentDownloads(query, parsedId.mediaType),
+      searchTheRarBG(query, parsedId.mediaType),
     ];
     if (parsedId.mediaType === 'movie') tasks.push(searchYts(imdbId));
     if (parsedId.mediaType === 'series') tasks.push(searchEztv(imdbId, season, episode));
+    if (parsedId.mediaType === 'series' || parsedId.mediaType === 'anime') {
+      tasks.push(searchSubsPlease(title, episode));
+    }
 
     const started = Date.now();
     const settled = await Promise.allSettled(tasks);
