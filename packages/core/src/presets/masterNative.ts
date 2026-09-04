@@ -37,10 +37,11 @@ export class MasterNativePreset extends BuiltinAddonPreset {
       TIMEOUT: 7000,
       USER_AGENT: 'Master-Addon',
       SUPPORTED_SERVICES: StremThruPreset.supportedServices,
-      DESCRIPTION: 'Self-hosted multi-provider source engine owned by Master Add-On.',
+      DESCRIPTION:
+        'Self-hosted movie, TV, anime and adult source engine owned by Master Add-On.',
       OPTIONS: options,
       SUPPORTED_STREAM_TYPES: [constants.DEBRID_STREAM_TYPE],
-      SUPPORTED_RESOURCES: [constants.STREAM_RESOURCE],
+      SUPPORTED_RESOURCES: [constants.STREAM_RESOURCE, 'catalog', 'meta'],
       BUILTIN: true,
     };
   }
@@ -71,7 +72,7 @@ export class MasterNativePreset extends BuiltinAddonPreset {
         displayIdentifier: 'Native',
         enabled: true,
         library: false,
-        resources: [constants.STREAM_RESOURCE],
+        resources: [constants.STREAM_RESOURCE, 'catalog', 'meta'],
         mediaTypes: [],
         timeout: options.timeout || 7000,
         preset: {
