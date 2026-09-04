@@ -1,4 +1,4 @@
-import { Addon, Option, UserData } from '../db/index.js';
+import { Addon, Option, Resource, UserData } from '../db/index.js';
 import { appConfig, constants } from '../utils/index.js';
 import { StremThruPreset } from './stremthru.js';
 import { BuiltinAddonPreset } from './builtin.js';
@@ -28,6 +28,11 @@ export class MasterNativePreset extends BuiltinAddonPreset {
         },
       },
     ];
+    const supportedResources: Resource[] = [
+      constants.STREAM_RESOURCE,
+      'catalog',
+      'meta',
+    ];
 
     return {
       ID: 'master-native',
@@ -41,7 +46,7 @@ export class MasterNativePreset extends BuiltinAddonPreset {
         'Self-hosted movie, TV, anime and adult source engine owned by Master Add-On.',
       OPTIONS: options,
       SUPPORTED_STREAM_TYPES: [constants.DEBRID_STREAM_TYPE],
-      SUPPORTED_RESOURCES: [constants.STREAM_RESOURCE, 'catalog', 'meta'],
+      SUPPORTED_RESOURCES: supportedResources,
       BUILTIN: true,
     };
   }
@@ -63,6 +68,7 @@ export class MasterNativePreset extends BuiltinAddonPreset {
       userData,
       usableServices.map((service) => service.id)
     );
+    const resources: Resource[] = [constants.STREAM_RESOURCE, 'catalog', 'meta'];
 
     return [
       {
@@ -72,7 +78,7 @@ export class MasterNativePreset extends BuiltinAddonPreset {
         displayIdentifier: 'Native',
         enabled: true,
         library: false,
-        resources: [constants.STREAM_RESOURCE, 'catalog', 'meta'],
+        resources,
         mediaTypes: [],
         timeout: options.timeout || 7000,
         preset: {
