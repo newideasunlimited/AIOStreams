@@ -26,6 +26,7 @@ const MASTER_RADIO_ID_PREFIX = 'masterradio:';
 router.use(trackResource('stream'));
 
 interface StreamParams {
+  [key: string]: string;
   type: string;
   id: string;
 }
@@ -262,7 +263,9 @@ async function resolveXvideosFallback(
 
 router.get('/master-media/:token', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const payload = decodeMediaPayload(req.params.token);
+    const rawToken = req.params.token;
+    const token = Array.isArray(rawToken) ? rawToken[0] : rawToken;
+    const payload = decodeMediaPayload(token ?? '');
     if (!payload) {
       res.sendStatus(403);
       return;
