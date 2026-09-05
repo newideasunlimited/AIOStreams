@@ -55,15 +55,12 @@ export class MasterNativePreset extends BuiltinAddonPreset {
     userData: UserData,
     options: Record<string, any>
   ): Promise<Addon[]> {
-    const usableServices = this.getUsableServices(
-      userData,
-      options.services,
-      options.name
-    );
-    if (!usableServices || usableServices.length === 0) {
-      throw new Error('Master Native requires at least one usable debrid service.');
-    }
+    const usableServices =
+      this.getUsableServices(userData, options.services, options.name) ?? [];
 
+    // Master Native owns catalogs and direct sources that do not require debrid
+    // (Porn, Live TV, Radio). Never drop the entire Master manifest merely
+    // because a debrid service is missing or temporarily misconfigured.
     const config = this.getBaseConfig(
       userData,
       usableServices.map((service) => service.id)
