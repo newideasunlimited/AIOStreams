@@ -43,7 +43,24 @@ jobs:
 
       - name: QA Master preset configuration plumbing
         run: |
+          mkdir -p /tmp/master-qa-resources
+          cat > /tmp/master-qa-resources/metadata.json <<'JSON'
+          {
+            "version": "qa",
+            "description": "Master Add-On QA",
+            "tag": "qa",
+            "channel": "qa",
+            "commitHash": "qa",
+            "buildTime": "2026-01-01T00:00:00.000Z",
+            "commitTime": "2026-01-01T00:00:00.000Z"
+          }
+          JSON
+
           docker run --rm \
+            -e BASE_URL=http://127.0.0.1:3000 \
+            -e SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+            -e DATABASE_URI=sqlite:///tmp/master-qa.sqlite \
+            -v /tmp/master-qa-resources/metadata.json:/app/resources/metadata.json:ro \
             --entrypoint /nodejs/bin/node \
             ghcr.io/newideasunlimited/aiostreams:master-addon \
             /app/scripts/master-addon-qa.mjs
