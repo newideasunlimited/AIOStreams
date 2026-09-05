@@ -1,5 +1,16 @@
 import assert from 'node:assert/strict';
-import { MasterNativePreset } from '../packages/core/dist/presets/masterNative.js';
+
+// AIOStreams runtime settings are intentionally unavailable until the config
+// store has initialised. Mirror the real server startup order here so QA tests
+// the product instead of tripping the module-load guard.
+const { initialiseConfig } = await import(
+  '../packages/core/dist/config/index.js'
+);
+await initialiseConfig();
+
+const { MasterNativePreset } = await import(
+  '../packages/core/dist/presets/masterNative.js'
+);
 
 const fakeUserData = {
   services: [
