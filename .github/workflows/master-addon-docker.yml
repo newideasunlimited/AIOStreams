@@ -41,16 +41,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # QA must exercise the same startup path as production. Importing core
-      # modules directly created artificial ESM/logger bootstrap failures that
-      # the real server does not hit, so the container itself is now the gate.
+      # QA exercises the production server startup path, but uses development
+      # mode so AIOStreams' internal-only builtin middleware permits localhost
+      # smoke tests without trying to override the readonly INTERNAL_SECRET.
       - name: Start Master QA container
         run: |
           docker run -d --name master-qa \
             -p 3000:3000 \
+            -e NODE_ENV=development \
             -e BASE_URL=http://127.0.0.1:3000 \
             -e SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
-            -e INTERNAL_SECRET=master-qa-internal-secret \
             -e DATABASE_URI=sqlite:///app/data/qa.sqlite \
             ghcr.io/newideasunlimited/aiostreams:master-addon
 
@@ -86,26 +86,25 @@ jobs:
           )"
 
           BASE="http://127.0.0.1:3000/builtins/master-native/$CONFIG"
-          INTERNAL_HEADER='X-AIOStreams-Internal-Secret: master-qa-internal-secret'
 
-          curl --fail --silent --show-error -H "$INTERNAL_HEADER" "$BASE/manifest.json" -o /tmp/master-manifest.json
+          curl --fail --silent --show-error "$BASE/manifest.json" -o /tmp/master-manifest.json
           jq -e '.catalogs | any(.id == "master-adult" and .name == "Porn")' /tmp/master-manifest.json
           jq -e '.catalogs | any(.id == "master-live-tv" and .name == "Live TV")' /tmp/master-manifest.json
           jq -e '.catalogs | any(.id == "master-radio" and .name == "Radio")' /tmp/master-manifest.json
           jq -e '.resources | length > 0' /tmp/master-manifest.json
 
-          curl --fail --silent --show-error -H "$INTERNAL_HEADER" "$BASE/catalog/tv/master-live-tv.json" -o /tmp/live-tv.json
+          curl --fail --silent --show-error "$BASE/catalog/tv/master-live-tv.json" -o /tmp/live-tv.json
           jq -e '.metas | type == "array" and length > 0' /tmp/live-tv.json
 
-          curl --fail --silent --show-error -H "$INTERNAL_HEADER" "$BASE/catalog/other/master-radio.json" -o /tmp/radio.json
+          curl --fail --silent --show-error "$BASE/catalog/other/master-radio.json" -o /tmp/radio.json
           jq -e '.metas | type == "array" and length > 0' /tmp/radio.json
 
-          curl --fail --silent --show-error -H "$INTERNAL_HEADER" "$BASE/catalog/movie/master-adult.json" -o /tmp/porn.json
+          curl --fail --silent --show-error "$BASE/catalog/movie/master-adult.json" -o /tmp/porn.json
           jq -e '.metas | type == "array" and length > 0' /tmp/porn.json
 
           PORN_ID="$(jq -r '.metas[0].id' /tmp/porn.json)"
           ENCODED_PORN_ID="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$PORN_ID")"
-          curl --fail --silent --show-error -H "$INTERNAL_HEADER" "$BASE/stream/movie/$ENCODED_PORN_ID.json" -o /tmp/porn-streams.json
+          curl --fail --silent --show-error "$BASE/stream/movie/$ENCODED_PORN_ID.json" -o /tmp/porn-streams.json
           jq -e '.streams | type == "array" and length > 0' /tmp/porn-streams.json
 
           echo 'Runtime QA passed: Porn, Porn playback, Live TV, and Radio are present and returning data.'
