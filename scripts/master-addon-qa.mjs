@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 
-// AIOStreams runtime settings are intentionally unavailable until the config
-// store has initialised. Mirror the real server startup order here so QA tests
-// the product instead of tripping the module-load guard.
+// Mirror the real server startup order: database first, then runtime config,
+// then presets. The settings store reads from the database during initialisation.
+const { initDb, closeDb } = await import('../packages/core/dist/db/index.js');
+await initDb(process.env.DATABASE_URI || 'sqlite:///tmp/master-qa.sqlite');
+
 const { initialiseConfig } = await import(
   '../packages/core/dist/config/index.js'
 );
@@ -62,4 +64,5 @@ assert.equal(
   'Master Native must remain available without debrid so Porn/Live TV/Radio cannot disappear'
 );
 
+await closeDb();
 console.log('Master preset QA passed: config injection and no-debrid manifest generation are intact.');
