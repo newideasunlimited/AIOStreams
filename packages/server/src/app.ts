@@ -38,6 +38,7 @@ import seanimeExtensionsRouter from './routes/seanime/extensions.js';
 import sabnzbdRouter from './routes/api/sabnzbd.js';
 import publicBlocklistRouter from './routes/blocklist.js';
 import publicCommunityRouter from './routes/community.js';
+import masterStaticRouter from './routes/master-static.js';
 import { createNabRouter } from './routes/api/nab.js';
 import {
   gdrive,
@@ -196,6 +197,7 @@ apiRouter.use((req, res) => {
 });
 
 app.use(`/api/v${constants.API_VERSION}`, apiRouter);
+app.use('/master-static', corsMiddleware, masterStaticRouter);
 
 // Stremio is a chatty client: one browse/play action can fan out into many
 // manifest/catalog/meta/stream requests, and TV/web/desktop clients can all
