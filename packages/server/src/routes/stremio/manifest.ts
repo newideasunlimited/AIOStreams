@@ -16,6 +16,8 @@ const router: Router = Router();
 
 export default router;
 
+const MASTER_MANIFEST_VERSION = '2.1.0';
+
 const manifest = async (config?: UserData): Promise<Manifest> => {
   let addonId = appConfig.branding.addonId;
   if (config) {
@@ -57,7 +59,7 @@ const manifest = async (config?: UserData): Promise<Manifest> => {
     id: addonId,
     version:
       appConfig.bootstrap.version === 'unknown'
-        ? '0.0.0'
+        ? MASTER_MANIFEST_VERSION
         : appConfig.bootstrap.version,
     description: config?.addonDescription || appConfig.bootstrap.description,
     catalogs,
