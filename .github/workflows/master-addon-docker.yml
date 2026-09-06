@@ -71,6 +71,17 @@ jobs:
           {
             "config": {
               "services": [],
+              "presets": [],
+              "formatter": {
+                "id": "prism",
+                "definition": {
+                  "name": "",
+                  "description": ""
+                }
+              },
+              "sortCriteria": {
+                "global": []
+              },
               "checkOwned": true,
               "autoRemoveDownloads": false
             },
