@@ -5,6 +5,7 @@ import {
   encodeAdultId,
   decodeAdultId,
   fetchAdultCatalog,
+  config as appConfig,
   type AdultTorrentItem,
 } from '@aiostreams/core';
 
@@ -261,13 +262,20 @@ function adultMeta(item: AdultTorrentItem) {
   };
 }
 
+function liveTvPoster(id?: string): string | undefined {
+  if (!id) return undefined;
+  const base = appConfig.bootstrap.baseUrl?.replace(/\/$/, '');
+  return base ? `${base}/master-static/live-tv/${encodeURIComponent(id)}.svg` : undefined;
+}
+
 function liveTvMeta(item: LiveTvMeta) {
+  const artwork = item.poster || item.logo || liveTvPoster(item.id);
   return {
     id: item.id,
     type: 'tv',
     name: item.name || 'Live TV',
-    poster: item.poster || item.logo,
-    background: item.poster || item.logo,
+    poster: artwork,
+    background: artwork,
     posterShape: 'poster',
     genres: item.genres ?? (item.genre ? [item.genre] : []),
     description: [item.country, item.genre].filter(Boolean).join(' • ') || 'Live TV',
