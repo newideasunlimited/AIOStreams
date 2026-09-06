@@ -25,6 +25,11 @@ const MASTER_RADIO_ID_PREFIX = 'masterradio:';
 const USA_TV_CATALOG_URL =
   'https://raw.githubusercontent.com/yowmamasita/usa-tv-next/main/catalog/tv/all.json';
 const RADIO_BROWSER_BASE = 'https://de1.api.radio-browser.info';
+const MIN_ADULT_DURATION_SECONDS = 10 * 60;
+const LIVE_TV_PROBE_TIMEOUT_MS = 4500;
+const LIVE_TV_HEALTH_TTL_MS = 10 * 60_000;
+const MAX_LIVE_TV_PROBES = 12;
+const MAX_LIVE_TV_STREAMS = 5;
 const LIVE_TV_GENRES = [
   'Local',
   'News',
@@ -103,11 +108,48 @@ function parseExtras(extra?: string) {
   };
 }
 
+function parseDurationSeconds(value?: string): number | undefined {
+  const text = value?.trim();
+  if (!text) return undefined;
+
+  const clock = text.match(/^(\d{1,3}):(\d{1,2})(?::(\d{1,2}))?$/);
+  if (clock) {
+    const first = Number(clock[1]);
+    const second = Number(clock[2]);
+    const third = clock[3] === undefined ? undefined : Number(clock[3]);
+    if (![first, second, third ?? 0].every(Number.isFinite)) return undefined;
+    return third === undefined
+      ? first * 60 + second
+      : first * 3600 + second * 60 + third;
+  }
+
+  const hoursMinutes = text.match(
+    /^(?:(\d+(?:\.\d+)?)\s*h(?:ours?)?)?\s*(?:(\d+(?:\.\d+)?)\s*m(?:in(?:ute)?s?)?)?$/i
+  );
+  if (hoursMinutes && (hoursMinutes[1] || hoursMinutes[2])) {
+    return Math.round(
+      (Number(hoursMinutes[1] ?? 0) * 60 + Number(hoursMinutes[2] ?? 0)) * 60
+    );
+  }
+
+  const numericMinutes = Number(text);
+  if (Number.isFinite(numericMinutes) && numericMinutes > 0) {
+    return Math.round(numericMinutes * 60);
+  }
+  return undefined;
+}
+
+function adultItemMeetsMinimumDuration(item: AdultTorrentItem): boolean {
+  if (item.sourceKind !== 'direct') return true;
+  const seconds = parseDurationSeconds(item.duration);
+  return seconds !== undefined && seconds >= MIN_ADULT_DURATION_SECONDS;
+}
+
 async function getAdultCatalog(extra?: string) {
   const { skip, search, genre } = parseExtras(extra);
   const effectiveSearch = !search && !genre ? 'all' : search;
   const items = await fetchAdultCatalog(effectiveSearch, genre, skip);
-  return items.map(adultMeta);
+  return items.filter(adultItemMeetsMinimumDuration).map(adultMeta);
 }
 
 type LiveTvStream = {
@@ -128,7 +170,116 @@ type LiveTvMeta = {
   streams?: LiveTvStream[];
 };
 
+const PRIORITY_LIVE_TV_ITEMS: LiveTvMeta[] = [
+  {
+    id: 'ustv-priority-comedy-central',
+    name: 'Comedy Central Pluto TV',
+    type: 'tv',
+    country: 'USA',
+    genre: 'Entertainment',
+    genres: ['Entertainment'],
+    streams: [
+      {
+        url: 'https://jmp2.uk/plu-5ca671f215a62078d2ec0abf.m3u8',
+        name: 'HD',
+        description: 'Comedy Central • Pluto TV',
+      },
+    ],
+  },
+  {
+    id: 'ustv-priority-adult-swim',
+    name: 'Adult Swim Stream',
+    type: 'tv',
+    country: 'USA',
+    genre: 'Entertainment',
+    genres: ['Entertainment'],
+    streams: [
+      {
+        url: 'https://media.cdn.adultswim.com/streams/playlists/live-stream.primary.v2.m3u8',
+        name: 'HD',
+        description: 'Adult Swim • Official free stream',
+      },
+    ],
+  },
+  {
+    id: 'ustv-priority-phx-abc15',
+    name: 'ABC15 Phoenix • KNXV',
+    type: 'tv',
+    country: 'USA',
+    genre: 'Local',
+    genres: ['Local', 'News'],
+    streams: [
+      {
+        url: 'https://content.uplynk.com/channel/9deaf22aaa33461f9cac22e030ed00ec.m3u8',
+        name: 'HD',
+        description: 'Phoenix • KNXV • ABC15',
+      },
+      {
+        url: 'https://aegis-cloudfront-1.tubi.video/e923f4ce-7229-4e01-a25e-d453993dab82/playlist.m3u8',
+        name: 'HD Backup',
+        description: 'Phoenix • KNXV • ABC15 • Tubi',
+      },
+    ],
+  },
+  {
+    id: 'ustv-priority-phx-fox10',
+    name: 'FOX 10 Phoenix • KSAZ',
+    type: 'tv',
+    country: 'USA',
+    genre: 'Local',
+    genres: ['Local', 'News'],
+    streams: [
+      {
+        url: 'https://cdn-uw2-prod.tsv2.amagi.tv/linear/amg00488-foxdigital-ksaz-lgus/playlist.m3u8',
+        name: 'HD',
+        description: 'Phoenix • KSAZ • FOX 10',
+      },
+      {
+        url: 'https://aegis-cloudfront-1.tubi.video/6bb80abf-8f73-46f3-a520-bb810d93f1d0/index.m3u8',
+        name: 'HD Backup',
+        description: 'Phoenix • KSAZ • FOX 10 • Tubi',
+      },
+    ],
+  },
+  {
+    id: 'ustv-priority-phx-12news',
+    name: '12News Phoenix • KPNX',
+    type: 'tv',
+    country: 'USA',
+    genre: 'Local',
+    genres: ['Local', 'News'],
+    streams: [
+      {
+        url: 'https://live-manifest.production-public.tubi.io/live/68c66ccb-444f-46d4-bcbf-37511338b170/playlist.m3u8',
+        name: 'HD',
+        description: 'Phoenix • KPNX • 12News',
+      },
+      {
+        url: 'https://livetv-fa.tubi.video/kpnx/live.m3u8',
+        name: 'HD Backup',
+        description: 'Phoenix • KPNX • 12News • Tubi',
+      },
+    ],
+  },
+  {
+    id: 'ustv-priority-phx-azfamily',
+    name: "Arizona's Family News • 3TV/CBS5",
+    type: 'tv',
+    country: 'USA',
+    genre: 'Local',
+    genres: ['Local', 'News'],
+    streams: [
+      {
+        url: 'https://player-api.new.livestream.com/accounts/12643960/events/3893868/live.m3u8',
+        name: 'Live',
+        description: "Phoenix • Arizona's Family • KTVK/KPHO",
+      },
+    ],
+  },
+];
+
 let liveTvCache: { expires: number; metas: LiveTvMeta[] } | undefined;
+const liveTvHealthCache = new Map<string, { expires: number; ok: boolean }>();
 
 async function getLiveTvItems(): Promise<LiveTvMeta[]> {
   if (liveTvCache && liveTvCache.expires > Date.now()) return liveTvCache.metas;
@@ -138,7 +289,12 @@ async function getLiveTvItems(): Promise<LiveTvMeta[]> {
   });
   if (!response.ok) throw new Error(`USA TV Next returned ${response.status}`);
   const payload = (await response.json()) as { metas?: LiveTvMeta[] };
-  const metas = Array.isArray(payload.metas) ? payload.metas : [];
+  const upstream = Array.isArray(payload.metas) ? payload.metas : [];
+  const priorityIds = new Set(PRIORITY_LIVE_TV_ITEMS.map((item) => item.id));
+  const metas = [
+    ...PRIORITY_LIVE_TV_ITEMS,
+    ...upstream.filter((item) => !item.id || !priorityIds.has(item.id)),
+  ];
   liveTvCache = { expires: Date.now() + 15 * 60_000, metas };
   return metas;
 }
@@ -175,6 +331,88 @@ async function getLiveTvCatalog(extra?: string) {
 
 async function findLiveTvItem(id: string): Promise<LiveTvMeta | undefined> {
   return (await getLiveTvItems()).find((item) => item.id === id);
+}
+
+function isUsefulLiveTvStream(stream: LiveTvStream): boolean {
+  const url = stream.url ?? '';
+  const label = `${stream.name ?? ''} ${stream.description ?? ''}`;
+  if (!/^https:\/\//i.test(url)) return false;
+  if (/\baudio\b/i.test(label)) return false;
+  if (/%7b|%7d|[{}]/i.test(url)) return false;
+  if (/weather_in_90_seconds|news_in_90_seconds|radio-/i.test(url)) return false;
+  if (/\/abc-(?:nsw|qld|sa|me|tv-plus)\.m3u8/i.test(url)) return false;
+  return true;
+}
+
+function playlistLooksVideoCapable(text: string): boolean {
+  if (!text.includes('#EXTM3U')) return false;
+  const streamInf = text
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('#EXT-X-STREAM-INF'));
+  if (streamInf.length === 0) return true;
+
+  return streamInf.some((line) => {
+    if (/RESOLUTION=\d+x\d+/i.test(line)) return true;
+    const codecs = line.match(/CODECS="([^"]+)"/i)?.[1];
+    if (!codecs) return true;
+    return /avc1|avc3|hev1|hvc1|vp0?9|av01|theora|video/i.test(codecs);
+  });
+}
+
+async function probeLiveTvUrl(url: string): Promise<boolean> {
+  const cached = liveTvHealthCache.get(url);
+  if (cached && cached.expires > Date.now()) return cached.ok;
+
+  let ok = false;
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': DIRECT_USER_AGENT,
+        Accept: 'application/vnd.apple.mpegurl,application/x-mpegURL,*/*;q=0.8',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(LIVE_TV_PROBE_TIMEOUT_MS),
+    });
+    if (response.ok) {
+      const text = await response.text();
+      ok = playlistLooksVideoCapable(text);
+    }
+  } catch {
+    ok = false;
+  }
+
+  liveTvHealthCache.set(url, {
+    expires: Date.now() + LIVE_TV_HEALTH_TTL_MS,
+    ok,
+  });
+  return ok;
+}
+
+function liveTvQualityRank(stream: LiveTvStream): number {
+  const value = `${stream.name ?? ''} ${stream.description ?? ''}`;
+  if (/\b(?:4k|uhd|2160)\b/i.test(value)) return 4;
+  if (/\b(?:fhd|1080|hd)\b/i.test(value)) return 3;
+  if (/\b720\b/i.test(value)) return 2;
+  if (/\bsd\b|480|360/i.test(value)) return 1;
+  return 0;
+}
+
+async function healthyLiveTvStreams(item: LiveTvMeta): Promise<LiveTvStream[]> {
+  const candidates = (item.streams ?? [])
+    .filter(isUsefulLiveTvStream)
+    .sort((a, b) => liveTvQualityRank(b) - liveTvQualityRank(a))
+    .slice(0, MAX_LIVE_TV_PROBES);
+
+  const tested = await Promise.all(
+    candidates.map(async (stream) => ({
+      stream,
+      ok: stream.url ? await probeLiveTvUrl(stream.url) : false,
+    }))
+  );
+  return tested
+    .filter((entry) => entry.ok)
+    .map((entry) => entry.stream)
+    .slice(0, MAX_LIVE_TV_STREAMS);
 }
 
 type RadioStation = {
@@ -553,13 +791,15 @@ router.get(
         }
 
         if (item.sourceKind === 'direct') {
-          let directStreams =
+          if (!adultItemMeetsMinimumDuration(item)) {
+            res.json({ streams: [] });
+            return;
+          }
+
+          const directStreams =
             item.indexer === 'EPorner'
               ? await resolveCurrentEpornerStreams(item)
               : await resolveAdultDirectStreams(item);
-          if (item.indexer === 'EPorner' && directStreams.length === 0) {
-            directStreams = await resolveAdultDirectStreams(item);
-          }
 
           const streams = directStreams.map((stream) => ({
             name: `Master • ${stream.name}`,
@@ -611,8 +851,9 @@ router.get(
 
       if (id.startsWith('ustv-')) {
         const item = await findLiveTvItem(id);
-        const streams = (item?.streams ?? []).filter((stream) => stream.url).map((stream) => ({
-          name: stream.name || 'Live TV',
+        const liveStreams = item ? await healthyLiveTvStreams(item) : [];
+        const streams = liveStreams.map((stream) => ({
+          name: `Master • ${stream.name || 'Live TV'}`,
           title: stream.description || item?.name || 'Live TV',
           url: stream.url,
           behaviorHints: { ...(stream.behaviorHints ?? {}), notWebReady: true },
