@@ -72,6 +72,47 @@ function publicBaseUrl(): string {
   return appConfig.bootstrap.baseUrl?.replace(/\/$/, '') || '';
 }
 
+function publicMediaflowBaseUrl(): string {
+  const configured = process.env.MEDIAFLOW_PUBLIC_URL?.replace(/\/$/, '');
+  if (configured) return configured;
+
+  const base = publicBaseUrl();
+  if (!base) return '';
+  try {
+    const url = new URL(base);
+    url.port = process.env.MEDIAFLOW_PUBLIC_PORT || '8888';
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function mediaflowLiveTvUrl(
+  destination: string,
+  mode: 'compatibility' | 'hls'
+): string | undefined {
+  const base = publicMediaflowBaseUrl();
+  if (!base) return undefined;
+
+  const endpoint =
+    mode === 'compatibility'
+      ? '/proxy/transcode/playlist.m3u8'
+      : '/proxy/hls/manifest.m3u8';
+  const url = new URL(endpoint, `${base}/`);
+  url.searchParams.set('d', destination);
+  const password = process.env.MEDIAFLOW_API_PASSWORD;
+  if (password) url.searchParams.set('api_password', password);
+  url.searchParams.set('h_user-agent', DIRECT_USER_AGENT);
+  if (mode === 'hls') {
+    url.searchParams.set('force_playlist_proxy', 'true');
+    url.searchParams.set('start_offset', '-18');
+  }
+  return url.toString();
+}
+
 function posterUrl(id: string): string | undefined {
   const base = publicBaseUrl();
   return base
@@ -402,6 +443,13 @@ async function healthyLiveTvStreams(item: LiveTvMeta): Promise<LiveTvStream[]> {
     .filter(isUsefulLiveTvStream)
     .sort((a, b) => liveTvQualityRank(b) - liveTvQualityRank(a))
     .slice(0, MAX_LIVE_TV_PROBES);
+
+  // Curated feeds are intentionally retained even when the origin rejects our
+  // lightweight server-side probe. MediaFlow performs the real HLS fetch for
+  // the client and can satisfy origins that behave differently for playback.
+  if (item.id?.startsWith('ustv-priority-')) {
+    return candidates.slice(0, MAX_LIVE_TV_STREAMS);
+  }
 
   const tested = await Promise.all(
     candidates.map(async (stream) => ({
@@ -855,12 +903,43 @@ router.get(
       if (id.startsWith('ustv-')) {
         const item = await findLiveTvItem(id);
         const liveStreams = item ? await healthyLiveTvStreams(item) : [];
-        const streams = liveStreams.map((stream) => ({
-          name: `Master • ${stream.name || 'Live TV'}`,
-          title: stream.description || item?.name || 'Live TV',
-          url: stream.url,
-          behaviorHints: { ...(stream.behaviorHints ?? {}), notWebReady: true },
-        }));
+        const streams = liveStreams.flatMap((stream) => {
+          if (!stream.url) return [];
+          const compatibilityUrl = mediaflowLiveTvUrl(stream.url, 'compatibility');
+          const hlsProxyUrl = mediaflowLiveTvUrl(stream.url, 'hls');
+          const title = stream.description || item?.name || 'Live TV';
+          const label = stream.name || 'Live TV';
+          const proxied = [
+            compatibilityUrl
+              ? {
+                  name: `Master • ${label} • TV Compatible`,
+                  title,
+                  url: compatibilityUrl,
+                  behaviorHints: { ...(stream.behaviorHints ?? {}), notWebReady: false },
+                }
+              : undefined,
+            hlsProxyUrl
+              ? {
+                  name: `Master • ${label} • HLS Proxy`,
+                  title,
+                  url: hlsProxyUrl,
+                  behaviorHints: { ...(stream.behaviorHints ?? {}), notWebReady: false },
+                }
+              : undefined,
+          ].filter(Boolean);
+
+          // If MediaFlow has no public URL configuration, retain the raw stream
+          // instead of turning a temporary proxy configuration issue into zero sources.
+          if (proxied.length === 0) {
+            proxied.push({
+              name: `Master • ${label} • Direct`,
+              title,
+              url: stream.url,
+              behaviorHints: { ...(stream.behaviorHints ?? {}), notWebReady: true },
+            });
+          }
+          return proxied;
+        });
         res.json({ streams });
         return;
       }
