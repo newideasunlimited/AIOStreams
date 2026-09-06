@@ -50,6 +50,11 @@ COPY resources ./resources
 # real source can compile while preserving the route behavior.
 RUN sed -i 's/function responseCookieHeader(response: Response)/function responseCookieHeader(response: globalThis.Response)/' packages/server/src/routes/stremio/stream.ts
 
+# Patch Master Live TV before compilation. The upstream USA TV addon separates
+# catalog metadata from /stream resources, and MediaFlow compatibility playback
+# should use the generic stream endpoint with transcode=true for live feeds.
+RUN node scripts/patch-master-live-tv.mjs
+
 # Build the project.
 RUN pnpm run build
 
