@@ -23,51 +23,46 @@ function qualityRank(label: string): number {
 }
 
 function parsePlayerValue(html: string, key: 'hash' | 'vid'): string {
-  // EPorner's player page exposes these exact assignments. This matches the
-  // working MIT OnlyPorn provider rather than guessing from the public API id.
   const exact = html.match(
     new RegExp(`EP\\.video\\.player\\.${key}\\s*=\\s*['\"]([^'\"]+)['\"]\\s*;`, 'i')
   )?.[1];
   if (exact) return exact;
 
-  // Keep a tolerant fallback for minor page-script formatting changes.
   return (
     html.match(new RegExp(`${key}\\s*[:=]\\s*['\"]([^'\"]+)['\"]`, 'i'))?.[1] ?? ''
   );
 }
 
-export async function resolveEpornerCurrent(
-  item: AdultTorrentItem
-): Promise<DirectStream[]> {
-  if (!item.detailUrl) return [];
+function responseCookieHeader(response: Response): string | undefined {
+  const headers = response.headers as Headers & {
+    getSetCookie?: () => string[];
+  };
+  const values = headers.getSetCookie?.() ?? [];
+  const raw = values.length > 0 ? values : [response.headers.get('set-cookie') ?? ''];
+  const cookies = raw
+    .flatMap((value) => value.split(/,(?=[^;,]+=)/g))
+    .map((value) => value.split(';', 1)[0]?.trim())
+    .filter((value): value is string => Boolean(value));
+  return cookies.length > 0 ? cookies.join('; ') : undefined;
+}
 
-  const page = await fetch(item.detailUrl, {
-    headers: {
-      'User-Agent': USER_AGENT,
-      Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
-      Referer: 'https://www.eporner.com/',
-    },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!page.ok) return [];
-
-  const html = await page.text();
-  const rawHash = parsePlayerValue(html, 'hash');
-  const videoId = parsePlayerValue(html, 'vid') || item.sourceId || '';
-  if (!/^[a-f0-9]{32}$/i.test(rawHash) || !videoId) return [];
-
-  const referer = page.url || item.detailUrl;
+async function fetchVideoPayload(
+  videoId: string,
+  hash: string,
+  referer: string,
+  cookie: string | undefined,
+  embed: boolean
+) {
   const xhr = new URL(
     `https://www.eporner.com/xhr/video/${encodeURIComponent(videoId)}`
   );
-  xhr.searchParams.set('hash', calcHash(rawHash));
+  xhr.searchParams.set('hash', hash);
   xhr.searchParams.set('domain', 'www.eporner.com');
   xhr.searchParams.set('pixelRatio', '2');
   xhr.searchParams.set('playerWidth', '0');
   xhr.searchParams.set('playerHeight', '0');
   xhr.searchParams.set('fallback', 'false');
-  xhr.searchParams.set('embed', 'false');
+  xhr.searchParams.set('embed', embed ? 'true' : 'false');
   xhr.searchParams.set('supportedFormats', 'hls,dash,h265,vp9,av1,mp4');
   xhr.searchParams.set('_', String(Date.now()));
 
@@ -76,27 +71,37 @@ export async function resolveEpornerCurrent(
       'User-Agent': USER_AGENT,
       Accept: 'application/json,text/plain,*/*',
       Referer: referer,
+      Origin: 'https://www.eporner.com',
       'X-Requested-With': 'XMLHttpRequest',
+      ...(cookie ? { Cookie: cookie } : {}),
     },
     signal: AbortSignal.timeout(10000),
   });
-  if (!response.ok) return [];
+  if (!response.ok) return null;
+  try {
+    return (await response.json()) as {
+      available?: boolean;
+      sources?: Record<string, Record<string, { src?: string; labelShort?: string }>>;
+    };
+  } catch {
+    return null;
+  }
+}
 
-  const payload = (await response.json()) as {
+function streamsFromPayload(
+  payload: {
     available?: boolean;
     sources?: Record<string, Record<string, { src?: string; labelShort?: string }>>;
-  };
-  if (payload.available === false || !payload.sources) return [];
+  } | null,
+  referer: string
+): DirectStream[] {
+  if (!payload || payload.available === false || !payload.sources) return [];
 
   const streams: DirectStream[] = [];
   const hls = payload.sources.hls;
   const autoHls = hls?.auto?.src;
   if (autoHls && /^https?:\/\//i.test(autoHls)) {
-    streams.push({
-      url: autoHls,
-      name: 'EPorner HLS Auto',
-      referer,
-    });
+    streams.push({ url: autoHls, name: 'EPorner HLS Auto', referer });
   }
 
   const mp4 = payload.sources.mp4;
@@ -111,8 +116,6 @@ export async function resolveEpornerCurrent(
     }
   }
 
-  // Some responses put usable sources under newer codec groups. Preserve them
-  // as additional fallbacks after the canonical HLS/MP4 paths.
   for (const [kind, group] of Object.entries(payload.sources)) {
     if (kind === 'hls' || kind === 'mp4' || !group) continue;
     for (const [formatId, format] of Object.entries(group)) {
@@ -133,4 +136,43 @@ export async function resolveEpornerCurrent(
       return true;
     })
     .sort((a, b) => qualityRank(b.name) - qualityRank(a.name));
+}
+
+export async function resolveEpornerCurrent(
+  item: AdultTorrentItem
+): Promise<DirectStream[]> {
+  if (!item.detailUrl) return [];
+
+  const page = await fetch(item.detailUrl, {
+    headers: {
+      'User-Agent': USER_AGENT,
+      Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+      Referer: 'https://www.eporner.com/',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!page.ok) return [];
+
+  const html = await page.text();
+  const rawHash = parsePlayerValue(html, 'hash');
+  const videoId = parsePlayerValue(html, 'vid') || item.sourceId || '';
+  if (!/^[a-f0-9]{32}$/i.test(rawHash) || !videoId) return [];
+
+  const referer = page.url || item.detailUrl;
+  const cookie = responseCookieHeader(page);
+  const hash = calcHash(rawHash);
+
+  // The XHR is session-sensitive. Browsers automatically carry the cookies set
+  // by the video page; Node fetch does not, so preserve them explicitly. Try the
+  // normal player contract first and the embed contract second because EPorner
+  // has served both variants over time.
+  const normal = await fetchVideoPayload(videoId, hash, referer, cookie, false);
+  let streams = streamsFromPayload(normal, referer);
+  if (streams.length > 0) return streams;
+
+  const embedded = await fetchVideoPayload(videoId, hash, referer, cookie, true);
+  streams = streamsFromPayload(embedded, referer);
+  return streams;
 }
