@@ -45,6 +45,10 @@ COPY packages/crypto ./packages/crypto
 COPY scripts ./scripts
 COPY resources ./resources
 
+# `Response` from Express shadows the fetch API `Response` type in the Master
+# stream route. Patch the single helper annotation in the image build so the
+# real source can compile while preserving the route behavior.
+RUN sed -i 's/function responseCookieHeader(response: Response)/function responseCookieHeader(response: globalThis.Response)/' packages/server/src/routes/stremio/stream.ts
 
 # Build the project.
 RUN pnpm run build
