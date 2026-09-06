@@ -6,6 +6,10 @@ import {
   StremioTransformer,
 } from '@aiostreams/core';
 import { trackResource } from '../../middlewares/analytics.js';
+import {
+  getMasterCatalog,
+  isMasterCatalogId,
+} from './master-native-resources.js';
 
 const logger = createLogger('server');
 const router: Router = Router();
@@ -29,11 +33,25 @@ router.get(
       );
       return;
     }
+
+    const { type, id, extras } = req.params;
+
+    if (isMasterCatalogId(id)) {
+      try {
+        const metas = await getMasterCatalog(id, extras);
+        res.status(200).json({ metas: metas ?? [] } as any);
+        return;
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        logger.error(`Master catalog retrieval failed: ${errorMsg}`);
+        res.status(200).json({ metas: [] } as any);
+        return;
+      }
+    }
+
     const transformer = new StremioTransformer(req.userData);
 
     try {
-      const { type, id, extras } = req.params;
-
       res
         .status(200)
         .json(
