@@ -103,6 +103,12 @@ jobs:
 
           curl --fail --silent --show-error "$BASE/catalog/tv/master-live-tv.json" -o /tmp/live-tv.json
           jq -e '.metas | type == "array" and length > 0' /tmp/live-tv.json
+          jq -e '.metas | any(.id == "ustv-priority-comedy-central")' /tmp/live-tv.json
+          jq -e '.metas | any(.id == "ustv-priority-adult-swim")' /tmp/live-tv.json
+          jq -e '.metas | any(.id == "ustv-priority-phx-abc15")' /tmp/live-tv.json
+          jq -e '.metas | any(.id == "ustv-priority-phx-fox10")' /tmp/live-tv.json
+          jq -e '.metas | any(.id == "ustv-priority-phx-12news")' /tmp/live-tv.json
+          jq -e '.metas | any(.id == "ustv-priority-phx-azfamily")' /tmp/live-tv.json
 
           curl --fail --silent --show-error "$BASE/catalog/other/master-radio.json" -o /tmp/radio.json
           jq -e '.metas | type == "array" and length > 0' /tmp/radio.json
@@ -110,43 +116,79 @@ jobs:
           curl --fail --silent --show-error "$BASE/catalog/movie/master-adult.json" -o /tmp/porn.json
           jq -e '.metas | type == "array" and length > 0' /tmp/porn.json
 
-          # Exercise the same resolver used by the installed Stremio stream
-          # route. The builtins compatibility route has older duplicate logic
-          # and is not a valid playback gate for the real addon.
-          docker cp /tmp/porn.json master-qa:/tmp/porn.json
-          docker exec master-qa /nodejs/bin/node --input-type=module -e '
-            import { readFile } from "node:fs/promises";
-            import { decodeAdultId } from "file:///app/packages/core/dist/index.js";
-            import { resolveEpornerCurrent } from "file:///app/packages/server/dist/routes/builtins/eporner-resolver.js";
-            const catalog = JSON.parse(await readFile("/tmp/porn.json", "utf8"));
-            let checked = 0;
-            for (const meta of (catalog.metas ?? []).slice(0, 12)) {
-              const item = decodeAdultId(meta.id);
-              if (!item || item.sourceKind !== "direct" || item.indexer !== "EPorner") continue;
-              checked += 1;
-              const streams = await resolveEpornerCurrent(item);
-              if (streams.some((stream) => typeof stream.url === "string" && stream.url.length > 0)) {
-                console.log(`Porn resolver QA passed with ${streams.length} source(s).`);
-                process.exit(0);
-              }
-            }
-            console.error(`Porn resolver QA failed after ${checked} current EPorner item(s).`);
-            process.exit(1);
-          '
+          # Porn cards must represent actual long-form videos. Build the test
+          # set only from entries whose advertised runtime is at least 10 min.
+          python3 - <<'PY'
+          import json
 
-          # Live TV and Radio must expose an actual media URL, not merely a card.
+          def seconds(value):
+              if not value:
+                  return None
+              text = str(value).strip()
+              parts = text.split(':')
+              try:
+                  if len(parts) == 2:
+                      return int(parts[0]) * 60 + int(parts[1])
+                  if len(parts) == 3:
+                      return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                  return round(float(text) * 60)
+              except ValueError:
+                  return None
+
+          data = json.load(open('/tmp/porn.json'))
+          metas = data.get('metas') or []
+          bad = [m for m in metas if seconds(m.get('runtime')) is None or seconds(m.get('runtime')) < 600]
+          if bad:
+              raise SystemExit(f'Porn duration QA failed: {len(bad)} card(s) under/unknown 10 minutes')
+          with open('/tmp/porn-ids.txt', 'w') as out:
+              for meta in metas[:12]:
+                  if meta.get('id'):
+                      out.write(meta['id'] + '\n')
+          PY
+
+          # Exercise the actual installed Stremio stream route. A passing
+          # helper function somewhere else in the tree is not playback QA.
+          PORN_OK=0
+          while IFS= read -r PORN_ID; do
+            [ -n "$PORN_ID" ] || continue
+            ENCODED_ID="$(encode_id "$PORN_ID")"
+            if curl --fail --silent --show-error "$BASE/stream/movie/$ENCODED_ID.json" -o /tmp/porn-streams.json \
+              && has_playable_url /tmp/porn-streams.json; then
+              PORN_OK=1
+              break
+            fi
+          done < /tmp/porn-ids.txt
+          if [ "$PORN_OK" -ne 1 ]; then
+            echo 'No playable long-form Porn URL found in the first 12 current videos.'
+            exit 1
+          fi
+
+          # The curated live cards are health-filtered by the route itself.
+          # Require multiple currently usable feeds, including Phoenix locals.
           LIVE_OK=0
-          while IFS= read -r LIVE_ID; do
-            [ -n "$LIVE_ID" ] || continue
+          PHX_OK=0
+          for LIVE_ID in \
+            ustv-priority-phx-abc15 \
+            ustv-priority-phx-fox10 \
+            ustv-priority-phx-12news \
+            ustv-priority-phx-azfamily \
+            ustv-priority-comedy-central \
+            ustv-priority-adult-swim; do
             ENCODED_ID="$(encode_id "$LIVE_ID")"
             if curl --fail --silent --show-error "$BASE/stream/tv/$ENCODED_ID.json" -o /tmp/live-streams.json \
               && has_playable_url /tmp/live-streams.json; then
-              LIVE_OK=1
-              break
+              LIVE_OK=$((LIVE_OK + 1))
+              case "$LIVE_ID" in
+                ustv-priority-phx-*) PHX_OK=$((PHX_OK + 1)) ;;
+              esac
             fi
-          done < <(jq -r '.metas[0:8][]?.id' /tmp/live-tv.json)
-          if [ "$LIVE_OK" -ne 1 ]; then
-            echo 'No playable Live TV URL found in the first 8 current channels.'
+          done
+          if [ "$LIVE_OK" -lt 3 ]; then
+            echo "Only $LIVE_OK curated Live TV feeds passed health checks; need at least 3."
+            exit 1
+          fi
+          if [ "$PHX_OK" -lt 2 ]; then
+            echo "Only $PHX_OK Phoenix local feeds passed health checks; need at least 2."
             exit 1
           fi
 
@@ -165,7 +207,7 @@ jobs:
             exit 1
           fi
 
-          echo 'Runtime QA passed: Porn resolver, Live TV, and Radio all expose playable media URLs.'
+          echo 'Runtime QA passed: long-form Porn, curated Live TV, Phoenix locals, and Radio expose playable media URLs.'
 
       - name: Dump QA logs on failure
         if: failure()
