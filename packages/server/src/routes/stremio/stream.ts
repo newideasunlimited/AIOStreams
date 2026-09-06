@@ -20,6 +20,8 @@ const DIRECT_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
 const USA_TV_CATALOG_URL =
   'https://raw.githubusercontent.com/yowmamasita/usa-tv-next/main/catalog/tv/all.json';
+const USA_TV_STREAM_BASE =
+  'https://raw.githubusercontent.com/yowmamasita/usa-tv-next/main/stream/tv';
 const RADIO_BROWSER_BASE = 'https://de1.api.radio-browser.info';
 const MASTER_RADIO_ID_PREFIX = 'masterradio:';
 
@@ -153,10 +155,93 @@ function tvStreamScore(stream: LiveTvStream): number {
   return score;
 }
 
+const LIVE_TV_MARKETS: Array<[RegExp, string]> = [
+  [/\bWABC(?:DT)?\d?\b|k?abc[-_]?new[-_]?york|new[-_]?york|cbsn[-_]?ny\b|\bWCBS\b/i, 'New York'],
+  [/\bKABC\b|abc[-_]?kabc[-_]?los[-_]?angeles|los[-_]?angeles|cbsn[-_]?la\b/i, 'Los Angeles'],
+  [/\bWLS\b|chicago|cbsn[-_]?chi\b|\bWBBM\b/i, 'Chicago'],
+  [/\bKMGH\b|\bKUSA\b|\bKCNC\b|denver/i, 'Denver'],
+  [/\bKGO\b|san[-_]?francisco|cbsn[-_]?sf\b|bay[-_]?area/i, 'San Francisco'],
+  [/\bWPVI\b|philadelphia|cbsn[-_]?phl\b/i, 'Philadelphia'],
+  [/\bKTRK\b|houston/i, 'Houston'],
+  [/\bWFAA\b|dallas|cbsn[-_]?dal\b/i, 'Dallas'],
+  [/\bWSB\b|atlanta/i, 'Atlanta'],
+  [/\bWCVB\b|boston|cbsn[-_]?bos\b/i, 'Boston'],
+  [/\bWPLG\b|\bWFOR\b|miami|cbsn[-_]?mia\b/i, 'Miami'],
+  [/\bKOMO\b|seattle/i, 'Seattle'],
+  [/\bKATU\b|portland/i, 'Portland'],
+  [/\bKNXV\b|\bKPHO\b|phoenix/i, 'Phoenix'],
+  [/\bKVUE\b|austin/i, 'Austin'],
+  [/\bKSAT\b|san[-_]?antonio/i, 'San Antonio'],
+  [/\bKGT V\b|\bKGTV\b|san[-_]?diego/i, 'San Diego'],
+  [/\bWXYZ\b|detroit|cbsn[-_]?det\b/i, 'Detroit'],
+  [/\bKSTP\b|minneapolis|cbsn[-_]?min\b/i, 'Minneapolis'],
+  [/\bKXTV\b|sacramento|cbsn[-_]?sac\b/i, 'Sacramento'],
+  [/\bWTAE\b|pittsburgh|cbsn[-_]?pit\b/i, 'Pittsburgh'],
+  [/\bWMAR\b|baltimore/i, 'Baltimore'],
+  [/tampa[-_]?bay|tampa|\bWTVT\b/i, 'Tampa Bay'],
+  [/tallahassee|\bWTXL\b/i, 'Tallahassee'],
+  [/raleigh|durham|\bWTVD\b/i, 'Raleigh-Durham'],
+  [/washington[-_]?dc|\bWJLA\b|\bWUSA\b/i, 'Washington, DC'],
+];
+
+function inferLiveTvMarket(stream: LiveTvStream): string | undefined {
+  const haystack = `${stream.url ?? ''} ${stream.description ?? ''}`;
+  for (const [pattern, market] of LIVE_TV_MARKETS) {
+    if (pattern.test(haystack)) return market;
+  }
+  return undefined;
+}
+
+function friendlyLiveTvLabel(stream: LiveTvStream, index: number): string {
+  const market = inferLiveTvMarket(stream);
+  const quality = /\b(4K|UHD|FHD|HD|SD|720P|1080P)\b/i.exec(stream.name ?? '')?.[1]?.toUpperCase();
+  const provider = (() => {
+    const url = stream.url ?? '';
+    if (/tvpass\.org/i.test(url)) return 'TVPass';
+    if (/cbsnstream/i.test(url)) return 'CBS News';
+    if (/abcnews-streams/i.test(url)) return 'ABC News';
+    if (/uplynk/i.test(url)) return 'Uplynk';
+    if (/amagi\.tv/i.test(url)) return 'Amagi';
+    if (/tubi\.video/i.test(url)) return 'Tubi';
+    if (/pluto\.tv/i.test(url)) return 'Pluto';
+    if (/google\.com|doubleclick\.net/i.test(url)) return 'Google TV';
+    return undefined;
+  })();
+
+  if (market) return [market, quality].filter(Boolean).join(' • ');
+  if (provider) return [provider, quality].filter(Boolean).join(' • ');
+  return [`Feed ${index + 1}`, quality].filter(Boolean).join(' • ');
+}
+
 async function getLiveTvStreams(id: string): Promise<LiveTvStream[]> {
   const item = (await getLiveTvItems()).find((candidate) => candidate.id === id);
-  return (item?.streams ?? [])
-    .filter((stream) => Boolean(stream.url) && !/audio/i.test(stream.name ?? ''))
+  let streams: LiveTvStream[] = [];
+
+  // USA TV Next publishes a per-channel stream file that is fresher and more
+  // specific than the aggregate catalog. Use it first so local affiliates such
+  // as WABC/KABC/CBSN-CHI keep the market clues present in their URLs.
+  try {
+    const response = await fetch(`${USA_TV_STREAM_BASE}/${encodeURIComponent(id)}.json`, {
+      headers: { 'User-Agent': 'Master-Addon/2.0' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (response.ok) {
+      const payload = (await response.json()) as { streams?: LiveTvStream[] };
+      if (Array.isArray(payload.streams)) streams = payload.streams;
+    }
+  } catch {
+    // Fall back to the aggregate catalog below.
+  }
+
+  if (streams.length === 0) streams = item?.streams ?? [];
+
+  const seen = new Set<string>();
+  return streams
+    .filter((stream) => {
+      if (!stream.url || /audio/i.test(stream.name ?? '') || seen.has(stream.url)) return false;
+      seen.add(stream.url);
+      return true;
+    })
     .sort((a, b) => tvStreamScore(b) - tvStreamScore(a))
     .slice(0, 12);
 }
@@ -191,15 +276,28 @@ function titlesProbablyMatch(left: string, right: string): boolean {
   if (wanted.length === 0) return true;
   const candidate = new Set(normaliseTitleWords(right));
   const matched = wanted.filter((word) => candidate.has(word)).length;
-  return matched >= Math.min(3, Math.max(1, Math.ceil(wanted.length * 0.45)));
+  return matched >= Math.min(2, Math.max(1, Math.ceil(wanted.length * 0.3)));
 }
 
-async function fetchAdultHtml(url: string, referer?: string): Promise<string> {
+function responseCookieHeader(response: Response): string | undefined {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  const values = headers.getSetCookie?.() ?? [];
+  const raw = values.length > 0 ? values : [response.headers.get('set-cookie') ?? ''];
+  const cookies = raw
+    .flatMap((value) => value.split(/,(?=[^;,]+=)/g))
+    .map((value) => value.split(';', 1)[0]?.trim())
+    .filter((value): value is string => Boolean(value));
+  return cookies.length > 0 ? cookies.join('; ') : undefined;
+}
+
+async function fetchAdultHtml(url: string, referer?: string, cookie?: string): Promise<string> {
   const response = await fetch(url, {
     headers: {
       'User-Agent': DIRECT_USER_AGENT,
       Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
       ...(referer ? { Referer: referer } : {}),
+      ...(cookie ? { Cookie: cookie } : {}),
     },
     redirect: 'follow',
     signal: AbortSignal.timeout(10000),
@@ -212,23 +310,37 @@ async function resolveXvideosFallback(
   title: string
 ): Promise<Array<{ url: string; name: string; referer?: string }>> {
   try {
-    const query = normaliseTitleWords(title).slice(0, 8).join(' ');
+    const query = normaliseTitleWords(title).slice(0, 5).join(' ');
     if (!query) return [];
+
+    // Warm the site first and preserve its session cookie. Browser-based
+    // implementations do this automatically; Node fetch does not.
+    const root = await fetch('https://www.xvideos.com/', {
+      headers: {
+        'User-Agent': DIRECT_USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(10000),
+    });
+    const cookie = root.ok ? responseCookieHeader(root) : undefined;
+
     const searchUrl = `https://www.xvideos.com/?k=${encodeURIComponent(query)}`;
-    const html = await fetchAdultHtml(searchUrl, 'https://www.xvideos.com/');
+    const html = await fetchAdultHtml(searchUrl, 'https://www.xvideos.com/', cookie);
     if (!html) return [];
 
     const links = [
       ...new Set(
-        [...html.matchAll(/href=["'](\/video[^"'#?\s]+)["']/gi)].map(
+        [...html.matchAll(/href=["'](\/video(?:\.|\/)[^"'#?\s]+)["']/gi)].map(
           (match) => match[1]
         )
       ),
-    ].slice(0, 5);
+    ].slice(0, 8);
 
     for (const path of links) {
       const detailUrl = new URL(path, 'https://www.xvideos.com').toString();
-      const detail = await fetchAdultHtml(detailUrl, 'https://www.xvideos.com/');
+      const detail = await fetchAdultHtml(detailUrl, 'https://www.xvideos.com/', cookie);
       if (!detail) continue;
 
       const pageTitle =
@@ -375,12 +487,15 @@ router.get(
     if (id.startsWith('ustv-')) {
       try {
         const candidates = await getLiveTvStreams(id);
-        const streams = candidates.map((stream) => ({
-          name: `Master • ${stream.name || 'Live TV'}`,
-          title: stream.description || 'Live TV',
-          url: mediaRelayUrl(req, stream.url!),
-          behaviorHints: { notWebReady: false },
-        }));
+        const streams = candidates.map((stream, index) => {
+          const label = friendlyLiveTvLabel(stream, index);
+          return {
+            name: `Master • ${label}`,
+            title: label,
+            url: mediaRelayUrl(req, stream.url!),
+            behaviorHints: { notWebReady: false },
+          };
+        });
         res.status(200).json({ streams } as any);
         return;
       } catch (error) {
