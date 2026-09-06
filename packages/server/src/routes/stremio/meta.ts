@@ -4,10 +4,15 @@ import {
   MetaResponse,
   createLogger,
   StremioTransformer,
+  MASTER_ADULT_ID_PREFIX,
 } from '@aiostreams/core';
 
 import { trackResource } from '../../middlewares/analytics.js';
 import { createResponse } from '../../utils/responses.js';
+import {
+  getMasterMeta,
+  MASTER_RADIO_ID_PREFIX,
+} from './master-native-resources.js';
 
 const logger = createLogger('server');
 const router: Router = Router();
@@ -34,9 +39,36 @@ router.get(
       });
       return;
     }
+
+    const { type, id } = req.params;
+
+    if (
+      id.startsWith(MASTER_ADULT_ID_PREFIX) ||
+      id.startsWith('ustv-') ||
+      id.startsWith(MASTER_RADIO_ID_PREFIX)
+    ) {
+      try {
+        const meta = await getMasterMeta(id);
+        if (meta === undefined) {
+          res.status(404).json(
+            createResponse({
+              success: false,
+              error: { code: 'NOT_FOUND', message: 'Master meta not handled' },
+            })
+          );
+          return;
+        }
+        res.status(meta ? 200 : 404).json({ meta } as any);
+        return;
+      } catch (error) {
+        logger.error('Master meta retrieval failed', error);
+        res.status(404).json({ meta: null } as any);
+        return;
+      }
+    }
+
     const transformer = new StremioTransformer(req.userData);
     try {
-      const { type, id } = req.params;
       logger.debug('Meta request received', {
         type,
         id,
