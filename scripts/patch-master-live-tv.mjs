@@ -99,5 +99,50 @@ async function healthyLiveTvStreams(item: LiveTvMeta): Promise<LiveTvStream[]> {
   'upstream stream resource lookup'
 );
 
+replaceOnce(
+`  const baseResources = manifest.resources.map((resource) => {`,
+`  const adultCatalog = baseCatalogs.find((catalog) => catalog.id === MASTER_ADULT_CATALOG_ID);
+  const nonAdultBaseCatalogs = baseCatalogs.filter(
+    (catalog) => catalog.id !== MASTER_ADULT_CATALOG_ID
+  );
+  const baseResources = manifest.resources.map((resource) => {`,
+  'adult catalog ordering setup'
+);
+
+replaceOnce(
+`    catalogs: [
+      ...baseCatalogs,`,
+`    catalogs: [
+      ...nonAdultBaseCatalogs,`,
+  'non-adult catalogs first'
+);
+
+replaceOnce(
+`      {
+        type: 'other',
+        id: MASTER_RADIO_CATALOG_ID,
+        name: 'Radio',
+        extra: [
+          { name: 'skip' },
+          { name: 'search' },
+          { name: 'genre', options: [...RADIO_GENRES], isRequired: false },
+        ],
+      },
+    ],`,
+`      {
+        type: 'other',
+        id: MASTER_RADIO_CATALOG_ID,
+        name: 'Radio',
+        extra: [
+          { name: 'skip' },
+          { name: 'search' },
+          { name: 'genre', options: [...RADIO_GENRES], isRequired: false },
+        ],
+      },
+      ...(adultCatalog ? [adultCatalog] : []),
+    ],`,
+  'Porn catalog last'
+);
+
 fs.writeFileSync(path, source);
-console.log('Applied Master Live TV source/proxy patch.');
+console.log('Applied Master Live TV source/proxy/catalog-order patch.');
