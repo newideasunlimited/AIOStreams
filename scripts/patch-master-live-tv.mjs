@@ -64,37 +64,6 @@ replaceOnce(
 );
 
 replaceOnce(
-  "id: 'ustv-priority-comedy-central'",
-  "id: 'ustv-priority-v3-comedy-central'",
-  'Comedy Central cache-bust id'
-);
-replaceOnce(
-  "id: 'ustv-priority-adult-swim'",
-  "id: 'ustv-priority-v3-adult-swim'",
-  'Adult Swim cache-bust id'
-);
-replaceOnce(
-  "id: 'ustv-priority-phx-abc15'",
-  "id: 'ustv-priority-v3-phx-abc15'",
-  'ABC15 cache-bust id'
-);
-replaceOnce(
-  "id: 'ustv-priority-phx-fox10'",
-  "id: 'ustv-priority-v3-phx-fox10'",
-  'FOX10 cache-bust id'
-);
-replaceOnce(
-  "id: 'ustv-priority-phx-12news'",
-  "id: 'ustv-priority-v3-phx-12news'",
-  '12News cache-bust id'
-);
-replaceOnce(
-  "id: 'ustv-priority-phx-azfamily'",
-  "id: 'ustv-priority-v3-phx-azfamily'",
-  'Arizona Family cache-bust id'
-);
-
-replaceOnce(
 `function liveTvMeta(item: LiveTvMeta) {
   return {
     id: item.id,
@@ -193,17 +162,6 @@ replaceOnce(
 );
 
 replaceOnce(
-`  return {
-    ...manifest,
-    types: [`,
-`  return {
-    ...manifest,
-    version: '3.0.0-master91',
-    types: [`,
-  'manifest cache-bust version'
-);
-
-replaceOnce(
 `    catalogs: [
       ...baseCatalogs,`,
 `    catalogs: [
@@ -268,4 +226,4 @@ router.get('/poster/:id.svg', (req: Request, res: Response) => {`,
 );
 
 fs.writeFileSync(path, source);
-console.log('Applied Master Live TV source/proxy/cache/catalog-order patch.');
+console.log('Applied Master Live TV source/proxy/catalog-order patch with stable IDs.');
