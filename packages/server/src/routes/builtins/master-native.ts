@@ -796,10 +796,13 @@ router.get(
             return;
           }
 
-          const directStreams =
+          let directStreams =
             item.indexer === 'EPorner'
               ? await resolveCurrentEpornerStreams(item)
               : await resolveAdultDirectStreams(item);
+          if (item.indexer === 'EPorner' && directStreams.length === 0) {
+            directStreams = await resolveAdultDirectStreams(item);
+          }
 
           const streams = directStreams.map((stream) => ({
             name: `Master • ${stream.name}`,
