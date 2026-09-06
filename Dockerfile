@@ -55,6 +55,10 @@ RUN sed -i 's/function responseCookieHeader(response: Response)/function respons
 # should use the generic stream endpoint with transcode=true for live feeds.
 RUN node scripts/patch-master-live-tv.mjs
 
+# The installed /stremio stream route already handles Master playback. Add the
+# curated Phoenix/priority feeds to that real route as well, not just the builtin QA route.
+RUN node scripts/patch-master-installed-stream.mjs
+
 # Build the project.
 RUN pnpm run build
 
