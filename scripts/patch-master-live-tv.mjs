@@ -64,6 +64,65 @@ replaceOnce(
 );
 
 replaceOnce(
+  "id: 'ustv-priority-comedy-central'",
+  "id: 'ustv-priority-v3-comedy-central'",
+  'Comedy Central cache-bust id'
+);
+replaceOnce(
+  "id: 'ustv-priority-adult-swim'",
+  "id: 'ustv-priority-v3-adult-swim'",
+  'Adult Swim cache-bust id'
+);
+replaceOnce(
+  "id: 'ustv-priority-phx-abc15'",
+  "id: 'ustv-priority-v3-phx-abc15'",
+  'ABC15 cache-bust id'
+);
+replaceOnce(
+  "id: 'ustv-priority-phx-fox10'",
+  "id: 'ustv-priority-v3-phx-fox10'",
+  'FOX10 cache-bust id'
+);
+replaceOnce(
+  "id: 'ustv-priority-phx-12news'",
+  "id: 'ustv-priority-v3-phx-12news'",
+  '12News cache-bust id'
+);
+replaceOnce(
+  "id: 'ustv-priority-phx-azfamily'",
+  "id: 'ustv-priority-v3-phx-azfamily'",
+  'Arizona Family cache-bust id'
+);
+
+replaceOnce(
+`function liveTvMeta(item: LiveTvMeta) {
+  return {
+    id: item.id,
+    type: 'tv',
+    name: item.name || 'Live TV',
+    poster: item.poster || item.logo,
+    background: item.poster || item.logo,
+    posterShape: 'poster',`,
+`function liveTvPosterUrl(id: string): string | undefined {
+  const base = publicBaseUrl();
+  return base
+    ? \`${'${base}'}/builtins/master-native/live-tv-poster/${'${encodeURIComponent(id)}'}.svg\`
+    : undefined;
+}
+
+function liveTvMeta(item: LiveTvMeta) {
+  const artwork = item.poster || item.logo || (item.id ? liveTvPosterUrl(item.id) : undefined);
+  return {
+    id: item.id,
+    type: 'tv',
+    name: item.name || 'Live TV',
+    poster: artwork,
+    background: artwork,
+    posterShape: 'poster',`,
+  'Live TV poster fallback'
+);
+
+replaceOnce(
 `async function healthyLiveTvStreams(item: LiveTvMeta): Promise<LiveTvStream[]> {
   const candidates = (item.streams ?? [])
     .filter(isUsefulLiveTvStream)
@@ -100,6 +159,30 @@ async function healthyLiveTvStreams(item: LiveTvMeta): Promise<LiveTvStream[]> {
 );
 
 replaceOnce(
+`  // Curated feeds are intentionally retained even when the origin rejects our
+  // lightweight server-side probe. MediaFlow performs the real HLS fetch for
+  // the client and can satisfy origins that behave differently for playback.
+  if (item.id?.startsWith('ustv-priority-')) {
+    return candidates.slice(0, MAX_LIVE_TV_STREAMS);
+  }
+
+  const tested = await Promise.all(
+    candidates.map(async (stream) => ({
+      stream,
+      ok: stream.url ? await probeLiveTvUrl(stream.url) : false,
+    }))
+  );
+  return tested
+    .filter((entry) => entry.ok)
+    .map((entry) => entry.stream)
+    .slice(0, MAX_LIVE_TV_STREAMS);`,
+`  // Do not discard channels because the addon host cannot probe an origin.
+  // MediaFlow is the playback fetcher and some TV origins reject server-side probes.
+  return candidates.slice(0, MAX_LIVE_TV_STREAMS);`,
+  'remove destructive live TV health gate'
+);
+
+replaceOnce(
 `  const baseResources = manifest.resources.map((resource) => {`,
 `  const adultCatalog = baseCatalogs.find((catalog) => catalog.id === MASTER_ADULT_CATALOG_ID);
   const nonAdultBaseCatalogs = baseCatalogs.filter(
@@ -107,6 +190,17 @@ replaceOnce(
   );
   const baseResources = manifest.resources.map((resource) => {`,
   'adult catalog ordering setup'
+);
+
+replaceOnce(
+`  return {
+    ...manifest,
+    types: [`,
+`  return {
+    ...manifest,
+    version: '3.0.0-master91',
+    types: [`,
+  'manifest cache-bust version'
 );
 
 replaceOnce(
@@ -144,5 +238,34 @@ replaceOnce(
   'Porn catalog last'
 );
 
+replaceOnce(
+`router.get('/poster/:id.svg', (req: Request, res: Response) => {`,
+`router.get('/live-tv-poster/:id.svg', (req: Request, res: Response) => {
+  const rawId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const id = decodeURIComponent(rawId || '');
+  void findLiveTvItem(id).then((item) => {
+    const title = (item?.name || 'Live TV').slice(0, 60);
+    const escaped = title
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+    res.type('image/svg+xml').send(\`
+      <svg xmlns="http://www.w3.org/2000/svg" width="600" height="900" viewBox="0 0 600 900">
+        <rect width="600" height="900" fill="#111827"/>
+        <rect x="36" y="36" width="528" height="828" rx="28" fill="#1f2937"/>
+        <text x="300" y="300" text-anchor="middle" font-family="sans-serif" font-size="62" font-weight="700" fill="#ffffff">LIVE</text>
+        <text x="300" y="385" text-anchor="middle" font-family="sans-serif" font-size="62" font-weight="700" fill="#ffffff">TV</text>
+        <text x="300" y="560" text-anchor="middle" font-family="sans-serif" font-size="27" fill="#d1d5db">${'${escaped}'}</text>
+      </svg>
+    \`);
+  }).catch(() => res.status(404).end());
+});
+
+router.get('/poster/:id.svg', (req: Request, res: Response) => {`,
+  'Live TV poster route'
+);
+
 fs.writeFileSync(path, source);
-console.log('Applied Master Live TV source/proxy/catalog-order patch.');
+console.log('Applied Master Live TV source/proxy/cache/catalog-order patch.');
