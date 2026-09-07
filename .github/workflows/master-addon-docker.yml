@@ -64,6 +64,9 @@ jobs:
       - name: Full installed Master regression QA
         run: bash scripts/qa-master-installed.sh
 
+      - name: Live TV Stremio semantics QA
+        run: bash scripts/qa-master-live-tv-semantics.sh
+
       - name: Dump QA logs on failure
         if: failure()
         run: |
