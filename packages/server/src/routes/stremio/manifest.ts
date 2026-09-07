@@ -15,9 +15,10 @@ const router: Router = Router();
 
 export default router;
 
-// Private Master builds change independently of upstream release metadata.
-// Keep a real fallback version so Stremio can refresh the installed manifest.
-const MASTER_MANIFEST_VERSION = '2.1.1';
+// This private fork has client-visible manifest changes independent of upstream.
+// Always publish our own monotonically increasing semver so Stremio cannot treat
+// a changed Master manifest as the same cached upstream addon revision.
+const MASTER_MANIFEST_VERSION = '99.0.112';
 
 const manifest = async (config?: UserData): Promise<Manifest> => {
   let addonId = appConfig.branding.addonId;
@@ -28,11 +29,6 @@ const manifest = async (config?: UserData): Promise<Manifest> => {
   let resources: Manifest['resources'] = [];
   let addonCatalogs: Manifest['addonCatalogs'] = [];
   if (config) {
-    // IMPORTANT: Master Native must flow through the same preset/addon
-    // aggregation pipeline as every other addon. Stremio Board/Home rendered
-    // these catalogs correctly in the known-good build when they came from
-    // aiostreams.getCatalogs(). Manually appending raw catalog objects here
-    // produced valid JSON but the TV client stopped surfacing the rows.
     const aiostreams = new AIOStreams(config, { skipFailedAddons: true });
 
     await aiostreams.initialise();
@@ -45,10 +41,7 @@ const manifest = async (config?: UserData): Promise<Manifest> => {
   return {
     name: config?.addonName || appConfig.branding.addonName,
     id: addonId,
-    version:
-      appConfig.bootstrap.version === 'unknown'
-        ? MASTER_MANIFEST_VERSION
-        : appConfig.bootstrap.version,
+    version: MASTER_MANIFEST_VERSION,
     description: config?.addonDescription || appConfig.bootstrap.description,
     catalogs,
     resources,
@@ -83,6 +76,11 @@ router.get(
   async (req: Request, res: Response<Manifest>, next: NextFunction) => {
     logger.info({ uuid: req.userData?.uuid }, 'received request for manifest');
     try {
+      // Avoid intermediary/client HTTP caches preserving an obsolete catalog
+      // list after a private Master rebuild.
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       res.status(200).json(await manifest(req.userData));
     } catch (error) {
       logger.error(`Failed to generate manifest: ${error}`);
