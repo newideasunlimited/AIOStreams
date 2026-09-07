@@ -60,18 +60,38 @@ jobs:
           docker logs master-qa
           exit 1
 
-      - name: QA actual installed Stremio routes
+      - name: QA actual installed Stremio routes via Master preset
         run: |
           set -euo pipefail
 
           encode_id(){ python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
           has_playable_url(){ jq -e '.streams | type == "array" and any(.url? | type == "string" and length > 0)' "$1" >/dev/null; }
 
+          # This intentionally uses the same Master Source Pack -> Master Native
+          # preset pipeline that produced the known-good Home/Board rows. An
+          # empty preset list would let manual manifest injection pass QA while
+          # completely missing the client-visible regression we are testing.
           cat >/tmp/create-user.json <<'JSON'
           {
             "config": {
               "services": [],
-              "presets": [],
+              "presets": [
+                {
+                  "type": "master-source-pack",
+                  "instanceId": "master-source-pack-qa",
+                  "enabled": true,
+                  "options": {
+                    "includeGeneral": true,
+                    "includeLibrary": false,
+                    "includeAnime": false,
+                    "includeNekoBt": false,
+                    "includeLiveTv": false,
+                    "includeArgentinaTv": false,
+                    "includeStreamingCatalogs": false,
+                    "includeSubtitles": false
+                  }
+                }
+              ],
               "formatter": {
                 "id": "prism",
                 "definition": {
@@ -103,10 +123,28 @@ jobs:
           BASE="http://127.0.0.1:3000/stremio/$UUID/$ENCRYPTED_PASSWORD"
 
           curl --fail --silent --show-error "$BASE/manifest.json" -o /tmp/master-manifest.json
+          jq -e '.version != "0.0.0"' /tmp/master-manifest.json
+          jq -e '[.catalogs[] | select(.id == "master-live-tv")] | length == 1' /tmp/master-manifest.json
+          jq -e '[.catalogs[] | select(.id == "master-radio")] | length == 1' /tmp/master-manifest.json
+          jq -e '[.catalogs[] | select(.id == "master-adult")] | length == 1' /tmp/master-manifest.json
           jq -e '.catalogs | any(.id == "master-live-tv" and .name == "Live TV")' /tmp/master-manifest.json
           jq -e '.catalogs | any(.id == "master-radio" and .name == "Radio")' /tmp/master-manifest.json
           jq -e '.catalogs | any(.id == "master-adult" and .name == "Porn")' /tmp/master-manifest.json
-          jq -e '.catalogs[-1].id == "master-adult" and .catalogs[-1].name == "Porn"' /tmp/master-manifest.json
+
+          # The native addon supplies these three in this order. Keeping them
+          # adjacent verifies they were aggregated from Master Native instead of
+          # tacked onto the final manifest by route code.
+          python3 - <<'PY'
+          import json
+          m = json.load(open('/tmp/master-manifest.json'))
+          ids = [c.get('id') for c in m.get('catalogs', [])]
+          wanted = ['master-live-tv', 'master-radio', 'master-adult']
+          pos = [ids.index(x) for x in wanted]
+          if pos != list(range(pos[0], pos[0] + 3)):
+              raise SystemExit(f'Master catalogs are not adjacent native rows: {pos}')
+          if pos != sorted(pos):
+              raise SystemExit(f'Master catalog order wrong: {pos}')
+          PY
 
           curl --fail --silent --show-error "$BASE/catalog/tv/master-live-tv.json" -o /tmp/live-tv.json
           jq -e '.metas | type == "array" and length > 0' /tmp/live-tv.json
@@ -115,16 +153,13 @@ jobs:
           done
           jq -e '.metas[] | select(.id == "ustv-priority-phx-abc15") | (.poster | type == "string" and length > 0)' /tmp/live-tv.json
 
-          LIVE_OK=0
           PHX_OK=0
           for LIVE_ID in ustv-priority-phx-abc15 ustv-priority-phx-fox10 ustv-priority-phx-12news ustv-priority-phx-azfamily; do
             ENCODED_ID="$(encode_id "$LIVE_ID")"
             if curl --fail --silent --show-error "$BASE/stream/tv/$ENCODED_ID.json" -o /tmp/live-streams.json && has_playable_url /tmp/live-streams.json; then
-              LIVE_OK=$((LIVE_OK+1))
               PHX_OK=$((PHX_OK+1))
             fi
           done
-          [ "$LIVE_OK" -ge 2 ]
           [ "$PHX_OK" -ge 2 ]
 
           UPSTREAM_OK=0
@@ -155,7 +190,7 @@ jobs:
           curl --fail --silent --show-error "$BASE/catalog/movie/master-adult.json" -o /tmp/porn.json
           jq -e '.metas | type == "array" and length > 0' /tmp/porn.json
 
-          echo 'Installed-route QA passed: manifest advertises Live TV, Radio, Porn-last; TV/Radio/Porn catalogs load; Phoenix and upstream TV expose sources.'
+          echo 'Preset-pipeline QA passed: Master Native contributes Live TV, Radio, Porn to the actual installed manifest and all resource routes work.'
 
       - name: Dump QA logs on failure
         if: failure()
