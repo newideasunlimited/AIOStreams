@@ -43,7 +43,7 @@ BASE="http://127.0.0.1:3000/stremio/$UUID/$ENCRYPTED_PASSWORD"
 
 curl -fsS -D /tmp/manifest.headers "$BASE/manifest.json" -o /tmp/master-manifest.json
 grep -qi '^cache-control:.*no-store' /tmp/manifest.headers
-jq -e '.version == "99.0.114"' /tmp/master-manifest.json
+jq -e '.version == "99.0.115"' /tmp/master-manifest.json
 
 LIVE_CATALOG_ID="$(jq -r '.catalogs[] | select(.name == "Live TV" and .type == "tv") | .id' /tmp/master-manifest.json | head -n1)"
 RADIO_CATALOG_ID="$(jq -r '.catalogs[] | select(.name == "Radio" and .type == "other") | .id' /tmp/master-manifest.json | head -n1)"
