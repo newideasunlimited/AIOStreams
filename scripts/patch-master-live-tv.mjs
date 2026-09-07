@@ -54,20 +54,23 @@ replaceOnce(
 
   const endpoint =
     mode === 'compatibility'
-      ? '/proxy/transcode/playlist.m3u8'
+      ? '/proxy/stream'
       : '/proxy/hls/manifest.m3u8';
   const url = new URL(endpoint, \`${'${base}'}/\`);
   url.searchParams.set('d', destination);
   const password = process.env.MEDIAFLOW_API_PASSWORD;
   if (password) url.searchParams.set('api_password', password);
   url.searchParams.set('h_user-agent', DIRECT_USER_AGENT);
+  if (mode === 'compatibility') {
+    url.searchParams.set('transcode', 'true');
+  }
   if (mode === 'hls') {
     url.searchParams.set('force_playlist_proxy', 'true');
     url.searchParams.set('start_offset', '-18');
   }
   return url.toString();
 }`,
-  'MediaFlow compatibility URL'
+  'MediaFlow live compatibility URL'
 );
 
 replaceOnce(
