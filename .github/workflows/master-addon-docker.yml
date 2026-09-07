@@ -60,38 +60,21 @@ jobs:
           docker logs master-qa
           exit 1
 
-      - name: QA actual installed Stremio routes via Master preset
+      - name: QA actual installed Stremio routes via Master Native pipeline
         run: |
           set -euo pipefail
 
           encode_id(){ python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
           has_playable_url(){ jq -e '.streams | type == "array" and any(.url? | type == "string" and length > 0)' "$1" >/dev/null; }
 
-          # This intentionally uses the same Master Source Pack -> Master Native
-          # preset pipeline that produced the known-good Home/Board rows. An
-          # empty preset list would let manual manifest injection pass QA while
-          # completely missing the client-visible regression we are testing.
+          # Deliberately create a valid user with NO presets. The private Master
+          # build must auto-inject Master Native in memory so old/saved configs
+          # cannot lose the Home/Board catalogs.
           cat >/tmp/create-user.json <<'JSON'
           {
             "config": {
               "services": [],
-              "presets": [
-                {
-                  "type": "master-source-pack",
-                  "instanceId": "master-source-pack-qa",
-                  "enabled": true,
-                  "options": {
-                    "includeGeneral": true,
-                    "includeLibrary": false,
-                    "includeAnime": false,
-                    "includeNekoBt": false,
-                    "includeLiveTv": false,
-                    "includeArgentinaTv": false,
-                    "includeStreamingCatalogs": false,
-                    "includeSubtitles": false
-                  }
-                }
-              ],
+              "presets": [],
               "formatter": {
                 "id": "prism",
                 "definition": {
@@ -124,29 +107,44 @@ jobs:
 
           curl --fail --silent --show-error "$BASE/manifest.json" -o /tmp/master-manifest.json
           jq -e '.version != "0.0.0"' /tmp/master-manifest.json
-          jq -e '[.catalogs[] | select(.id == "master-live-tv")] | length == 1' /tmp/master-manifest.json
-          jq -e '[.catalogs[] | select(.id == "master-radio")] | length == 1' /tmp/master-manifest.json
-          jq -e '[.catalogs[] | select(.id == "master-adult")] | length == 1' /tmp/master-manifest.json
-          jq -e '.catalogs | any(.id == "master-live-tv" and .name == "Live TV")' /tmp/master-manifest.json
-          jq -e '.catalogs | any(.id == "master-radio" and .name == "Radio")' /tmp/master-manifest.json
-          jq -e '.catalogs | any(.id == "master-adult" and .name == "Porn")' /tmp/master-manifest.json
 
-          # The native addon supplies these three in this order. Keeping them
-          # adjacent verifies they were aggregated from Master Native instead of
-          # tacked onto the final manifest by route code.
+          LIVE_CATALOG_ID="$(jq -r '.catalogs[] | select(.name == "Live TV" and .type == "tv") | .id' /tmp/master-manifest.json | head -n1)"
+          RADIO_CATALOG_ID="$(jq -r '.catalogs[] | select(.name == "Radio" and .type == "other") | .id' /tmp/master-manifest.json | head -n1)"
+          PORN_CATALOG_ID="$(jq -r '.catalogs[] | select(.name == "Porn" and .type == "movie") | .id' /tmp/master-manifest.json | head -n1)"
+
+          test -n "$LIVE_CATALOG_ID"
+          test -n "$RADIO_CATALOG_ID"
+          test -n "$PORN_CATALOG_ID"
+          [[ "$LIVE_CATALOG_ID" == *.master-live-tv ]]
+          [[ "$RADIO_CATALOG_ID" == *.master-radio ]]
+          [[ "$PORN_CATALOG_ID" == *.master-adult ]]
+
+          LIVE_PREFIX="${LIVE_CATALOG_ID%.master-live-tv}"
+          RADIO_PREFIX="${RADIO_CATALOG_ID%.master-radio}"
+          PORN_PREFIX="${PORN_CATALOG_ID%.master-adult}"
+          [ "$LIVE_PREFIX" = "$RADIO_PREFIX" ]
+          [ "$LIVE_PREFIX" = "$PORN_PREFIX" ]
+
           python3 - <<'PY'
           import json
           m = json.load(open('/tmp/master-manifest.json'))
-          ids = [c.get('id') for c in m.get('catalogs', [])]
-          wanted = ['master-live-tv', 'master-radio', 'master-adult']
-          pos = [ids.index(x) for x in wanted]
-          if pos != list(range(pos[0], pos[0] + 3)):
-              raise SystemExit(f'Master catalogs are not adjacent native rows: {pos}')
-          if pos != sorted(pos):
-              raise SystemExit(f'Master catalog order wrong: {pos}')
+          cats = m.get('catalogs', [])
+          wanted = [('Live TV','tv'), ('Radio','other'), ('Porn','movie')]
+          positions=[]
+          for name, typ in wanted:
+              matches=[i for i,c in enumerate(cats) if c.get('name')==name and c.get('type')==typ]
+              if len(matches) != 1:
+                  raise SystemExit(f'Expected one {name}/{typ} catalog, got {matches}')
+              positions.append(matches[0])
+          if positions != list(range(positions[0], positions[0] + 3)):
+              raise SystemExit(f'Master Native catalogs are not adjacent/in order: {positions}')
           PY
 
-          curl --fail --silent --show-error "$BASE/catalog/tv/master-live-tv.json" -o /tmp/live-tv.json
+          ENCODED_LIVE_CATALOG_ID="$(encode_id "$LIVE_CATALOG_ID")"
+          ENCODED_RADIO_CATALOG_ID="$(encode_id "$RADIO_CATALOG_ID")"
+          ENCODED_PORN_CATALOG_ID="$(encode_id "$PORN_CATALOG_ID")"
+
+          curl --fail --silent --show-error "$BASE/catalog/tv/$ENCODED_LIVE_CATALOG_ID.json" -o /tmp/live-tv.json
           jq -e '.metas | type == "array" and length > 0' /tmp/live-tv.json
           for ID in ustv-priority-phx-abc15 ustv-priority-phx-fox10 ustv-priority-phx-12news ustv-priority-phx-azfamily; do
             jq -e --arg id "$ID" '.metas | any(.id == $id)' /tmp/live-tv.json
@@ -174,7 +172,7 @@ jobs:
           done < <(jq -r '.metas[0:40][]?.id' /tmp/live-tv.json)
           [ "$UPSTREAM_OK" -eq 1 ]
 
-          curl --fail --silent --show-error "$BASE/catalog/other/master-radio.json" -o /tmp/radio.json
+          curl --fail --silent --show-error "$BASE/catalog/other/$ENCODED_RADIO_CATALOG_ID.json" -o /tmp/radio.json
           jq -e '.metas | type == "array" and length > 0' /tmp/radio.json
           RADIO_OK=0
           while IFS= read -r RADIO_ID; do
@@ -187,10 +185,10 @@ jobs:
           done < <(jq -r '.metas[0:8][]?.id' /tmp/radio.json)
           [ "$RADIO_OK" -eq 1 ]
 
-          curl --fail --silent --show-error "$BASE/catalog/movie/master-adult.json" -o /tmp/porn.json
+          curl --fail --silent --show-error "$BASE/catalog/movie/$ENCODED_PORN_CATALOG_ID.json" -o /tmp/porn.json
           jq -e '.metas | type == "array" and length > 0' /tmp/porn.json
 
-          echo 'Preset-pipeline QA passed: Master Native contributes Live TV, Radio, Porn to the actual installed manifest and all resource routes work.'
+          echo 'Master Native QA passed: auto-injected native addon contributes adjacent Home/Board catalogs and TV/Radio/Porn resource routes work.'
 
       - name: Dump QA logs on failure
         if: failure()
