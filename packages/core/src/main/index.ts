@@ -34,20 +34,66 @@ import {
 
 const logger = createLogger('core');
 
+/**
+ * This private Master Add-On fork is supposed to expose Master Native on every
+ * installed configuration. Historically those catalogs reached Stremio through
+ * AIOStreams' normal preset/addon aggregation pipeline, which is also the path
+ * that made Live TV, Radio and Porn render as ordinary Home/Board rows.
+ *
+ * Some saved configurations predate Master Source Pack or have it disabled.
+ * Rather than manually appending raw catalog JSON at the final manifest route,
+ * inject one minimal in-memory Master Source Pack preset when no enabled preset
+ * is already providing Master Native. This does not mutate the stored config.
+ */
+function withRequiredMasterNative(userData: UserData): UserData {
+  const presets = userData.presets ?? [];
+  const hasEnabledMasterNative = presets.some(
+    (preset) =>
+      preset.enabled &&
+      preset.type === 'master-source-pack' &&
+      preset.options?.includeGeneral !== false
+  );
+
+  if (hasEnabledMasterNative) return userData;
+
+  return {
+    ...userData,
+    presets: [
+      ...presets,
+      {
+        type: 'master-source-pack',
+        instanceId: 'master-source-pack-auto',
+        enabled: true,
+        options: {
+          includeGeneral: true,
+          includeLibrary: false,
+          includeAnime: false,
+          includeNekoBt: false,
+          includeLiveTv: false,
+          includeArgentinaTv: false,
+          includeStreamingCatalogs: false,
+          includeSubtitles: false,
+        },
+      },
+    ],
+  };
+}
+
 export class AIOStreams {
   private ctx: AIOStreamsContext;
 
   constructor(userData: UserData, options?: AIOStreamsOptions) {
-    const filterer = new Filterer(userData);
-    const precomputer = new Precomputer(userData);
+    const effectiveUserData = withRequiredMasterNative(userData);
+    const filterer = new Filterer(effectiveUserData);
+    const precomputer = new Precomputer(effectiveUserData);
     this.ctx = {
-      userData,
+      userData: effectiveUserData,
       options,
       manifestUrl: withVariantSelector(
-        `${appConfig.bootstrap.baseUrl}/stremio/${userData.uuid}/${userData.encryptedPassword}`,
+        `${appConfig.bootstrap.baseUrl}/stremio/${effectiveUserData.uuid}/${effectiveUserData.encryptedPassword}`,
         '/manifest.json',
-        userData.activeVariants,
-        userData.variantSelectorLocation
+        effectiveUserData.activeVariants,
+        effectiveUserData.variantSelectorLocation
       ),
       manifests: {},
       supportedResources: {},
@@ -56,13 +102,13 @@ export class AIOStreams {
       finalAddonCatalogs: [],
       isInitialised: false,
       addons: [],
-      proxifier: new Proxifier(userData),
-      limiter: new StreamLimiter(userData),
+      proxifier: new Proxifier(effectiveUserData),
+      limiter: new StreamLimiter(effectiveUserData),
       filterer,
       precomputer,
-      fetcher: new Fetcher(userData, filterer, precomputer),
-      deduplicator: new Deduplicator(userData),
-      sorter: new Sorter(userData),
+      fetcher: new Fetcher(effectiveUserData, filterer, precomputer),
+      deduplicator: new Deduplicator(effectiveUserData),
+      sorter: new Sorter(effectiveUserData),
       streamContext: null,
       addonInitialisationErrors: [],
     };
