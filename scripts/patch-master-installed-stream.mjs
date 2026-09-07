@@ -17,6 +17,58 @@ replaceOnce(
 );
 
 replaceOnce(
+`function mediaRelayUrl(req: Request, url: string, referer?: string): string {
+  return \`${'${mediaRelayBase(req)}'}/${'${encodeMediaPayload({ u: url, ...(referer ? { r: referer } : {}) })}'}\`;
+}`,
+`function mediaRelayUrl(req: Request, url: string, referer?: string): string {
+  return \`${'${mediaRelayBase(req)}'}/${'${encodeMediaPayload({ u: url, ...(referer ? { r: referer } : {}) })}'}\`;
+}
+
+function publicMediaflowBaseUrl(): string | undefined {
+  const explicit = process.env.MEDIAFLOW_BASE_URL?.trim();
+  if (explicit) return explicit.replace(/\\/$/, '');
+  const configured = appConfig.bootstrap.baseUrl;
+  if (!configured) return undefined;
+  try {
+    const url = new URL(configured);
+    url.port = process.env.MEDIAFLOW_PUBLIC_PORT || '8888';
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\\/$/, '');
+  } catch {
+    return undefined;
+  }
+}
+
+function mediaflowLiveTvUrl(
+  destination: string,
+  mode: 'transcoded-hls' | 'transcoded-stream' | 'hls'
+): string | undefined {
+  const base = publicMediaflowBaseUrl();
+  if (!base) return undefined;
+  const endpoint =
+    mode === 'transcoded-hls'
+      ? '/proxy/transcode/playlist.m3u8'
+      : mode === 'transcoded-stream'
+        ? '/proxy/stream'
+        : '/proxy/hls/manifest.m3u8';
+  const url = new URL(endpoint, \`${'${base}'}/\`);
+  url.searchParams.set('d', destination);
+  const password = process.env.MEDIAFLOW_API_PASSWORD;
+  if (password) url.searchParams.set('api_password', password);
+  url.searchParams.set('h_user-agent', DIRECT_USER_AGENT);
+  if (mode === 'transcoded-stream') url.searchParams.set('transcode', 'true');
+  if (mode === 'hls') {
+    url.searchParams.set('force_playlist_proxy', 'true');
+    url.searchParams.set('start_offset', '-18');
+  }
+  return url.toString();
+}`,
+  'MediaFlow installed playback helpers'
+);
+
+replaceOnce(
 `async function getLiveTvStreams(id: string): Promise<LiveTvStream[]> {
   const item = (await getLiveTvItems()).find((candidate) => candidate.id === id);
   let streams: LiveTvStream[] = [];`,
@@ -68,5 +120,79 @@ replaceOnce(
   'Radio Browser discovery/failover'
 );
 
+replaceOnce(
+`    if (id.startsWith('ustv-')) {
+      try {
+        const candidates = await getLiveTvStreams(id);
+        const streams = candidates.map((stream, index) => {
+          const label = friendlyLiveTvLabel(stream, index);
+          return {
+            name: \`Master • ${'${label}'}\`,
+            title: label,
+            url: mediaRelayUrl(req, stream.url!),
+            behaviorHints: { notWebReady: false },
+          };
+        });
+        res.status(200).json({ streams } as any);
+        return;
+      } catch (error) {
+        logger.error('Master Live TV stream resolution failed', error);
+        res.status(200).json({ streams: [] } as any);
+        return;
+      }
+    }`,
+`    if (id.startsWith('ustv-')) {
+      try {
+        const candidates = await getLiveTvStreams(id);
+        const streams = candidates.flatMap((stream, index) => {
+          if (!stream.url) return [];
+          const label = friendlyLiveTvLabel(stream, index);
+          const transcodedHls = mediaflowLiveTvUrl(stream.url, 'transcoded-hls');
+          const transcodedStream = mediaflowLiveTvUrl(stream.url, 'transcoded-stream');
+          const hlsProxy = mediaflowLiveTvUrl(stream.url, 'hls');
+          return [
+            transcodedHls
+              ? {
+                  name: \`Master • ${'${label}'} • Transcoded HLS\`,
+                  title: label,
+                  url: transcodedHls,
+                  behaviorHints: { notWebReady: false },
+                }
+              : undefined,
+            transcodedStream
+              ? {
+                  name: \`Master • ${'${label}'} • Compatible Stream\`,
+                  title: label,
+                  url: transcodedStream,
+                  behaviorHints: { notWebReady: false },
+                }
+              : undefined,
+            hlsProxy
+              ? {
+                  name: \`Master • ${'${label}'} • HLS Proxy\`,
+                  title: label,
+                  url: hlsProxy,
+                  behaviorHints: { notWebReady: false },
+                }
+              : undefined,
+            {
+              name: \`Master • ${'${label}'} • Relay Fallback\`,
+              title: label,
+              url: mediaRelayUrl(req, stream.url),
+              behaviorHints: { notWebReady: false },
+            },
+          ].filter(Boolean);
+        });
+        res.status(200).json({ streams } as any);
+        return;
+      } catch (error) {
+        logger.error('Master Live TV stream resolution failed', error);
+        res.status(200).json({ streams: [] } as any);
+        return;
+      }
+    }`,
+  'installed Live TV MediaFlow playback'
+);
+
 fs.writeFileSync(path, source);
-console.log('Applied installed Master stream priority/radio failover patch.');
+console.log('Applied installed Master stream priority/radio/MediaFlow patch.');
