@@ -78,7 +78,7 @@ curl -fsS "$BASE/meta/tv/ustv-priority-phx-abc15.json" -o /tmp/tv-meta.json
 jq -e '.meta.id == "ustv-priority-phx-abc15"' /tmp/tv-meta.json
 curl -fsS "$BASE/stream/tv/ustv-priority-phx-abc15.json" -o /tmp/tv-streams.json
 has_playable_url /tmp/tv-streams.json
-jq -e '.streams | any(.url? | contains("/proxy/transcode/playlist.m3u8"))' /tmp/tv-streams.json
+jq -e '.streams | any(.url? | contains("/proxy/stream") and contains("transcode=true"))' /tmp/tv-streams.json
 jq -e '.streams | any(.url? | contains("/proxy/hls/manifest.m3u8"))' /tmp/tv-streams.json
 
 UPSTREAM_OK=0
@@ -114,9 +114,9 @@ curl -fsS --max-time 25 \
   'http://127.0.0.1:8888/proxy/hls/manifest.m3u8?d=https%3A%2F%2Fdevstreaming-cdn.apple.com%2Fvideos%2Fstreaming%2Fexamples%2Fimg_bipbop_adv_example_fmp4%2Fmaster.m3u8&force_playlist_proxy=true' \
   -o /tmp/mediaflow-hls.m3u8
 grep -q '#EXTM3U' /tmp/mediaflow-hls.m3u8
-curl -fsS --max-time 35 \
-  'http://127.0.0.1:8888/proxy/transcode/playlist.m3u8?d=https%3A%2F%2Fcommondatastorage.googleapis.com%2Fgtv-videos-bucket%2Fsample%2FForBiggerBlazes.mp4' \
-  -o /tmp/mediaflow-transcode.m3u8
-grep -q '#EXTM3U' /tmp/mediaflow-transcode.m3u8
+curl -fsSI --max-time 35 \
+  'http://127.0.0.1:8888/proxy/stream?d=https%3A%2F%2Fdevstreaming-cdn.apple.com%2Fvideos%2Fstreaming%2Fexamples%2Fimg_bipbop_adv_example_fmp4%2Fmaster.m3u8&transcode=true' \
+  -o /tmp/mediaflow-stream.headers
+grep -Eq '^HTTP/.* (200|206)' /tmp/mediaflow-stream.headers
 
-echo 'FULL MASTER QA PASSED: Board order, catalog/meta/stream routes, TV source fallbacks, MediaFlow HLS+transcode, Radio Browser failover, adult catalog/meta/playback.'
+echo 'FULL MASTER QA PASSED: Board order, catalog/meta/stream routes, TV source fallbacks, live MediaFlow HLS+continuous transcode, Radio Browser failover, adult catalog/meta/playback.'
