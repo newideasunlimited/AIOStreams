@@ -43,11 +43,12 @@ jobs:
 
       - name: Start Master QA container
         run: |
+          SECRET_KEY="$(printf 'a%.0s' {1..64})"
           docker run -d --name master-qa \
             -p 3000:3000 \
             -e NODE_ENV=development \
             -e BASE_URL=http://127.0.0.1:3000 \
-            -e SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+            -e SECRET_KEY="$SECRET_KEY" \
             -e DATABASE_URI=sqlite:///app/data/qa.sqlite \
             ghcr.io/newideasunlimited/aiostreams:master-addon
 
@@ -60,143 +61,20 @@ jobs:
           docker logs master-qa
           exit 1
 
-      - name: QA actual installed Stremio routes via Master Native pipeline
-        run: |
-          set -euo pipefail
-
-          encode_id(){ python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
-          has_playable_url(){ jq -e '.streams | type == "array" and any(.url? | type == "string" and length > 0)' "$1" >/dev/null; }
-
-          # Deliberately create a valid user with NO presets. The private Master
-          # build must auto-inject Master Native in memory so old/saved configs
-          # cannot lose the Home/Board catalogs.
-          cat >/tmp/create-user.json <<'JSON'
-          {
-            "config": {
-              "services": [],
-              "presets": [],
-              "formatter": {
-                "id": "prism",
-                "definition": {
-                  "name": "",
-                  "description": ""
-                }
-              },
-              "sortCriteria": {
-                "global": []
-              },
-              "checkOwned": true,
-              "autoRemoveDownloads": false
-            },
-            "password": "master-qa-password"
-          }
-          JSON
-
-          curl --fail --silent --show-error \
-            -H 'Content-Type: application/json' \
-            --data-binary @/tmp/create-user.json \
-            http://127.0.0.1:3000/api/v1/user \
-            -o /tmp/create-user-response.json
-
-          UUID="$(jq -r '.data.uuid // empty' /tmp/create-user-response.json)"
-          ENCRYPTED_PASSWORD="$(jq -r '.data.encryptedPassword // empty' /tmp/create-user-response.json)"
-          test -n "$UUID"
-          test -n "$ENCRYPTED_PASSWORD"
-
-          BASE="http://127.0.0.1:3000/stremio/$UUID/$ENCRYPTED_PASSWORD"
-
-          curl --fail --silent --show-error "$BASE/manifest.json" -o /tmp/master-manifest.json
-          jq -e '.version != "0.0.0"' /tmp/master-manifest.json
-
-          LIVE_CATALOG_ID="$(jq -r '.catalogs[] | select(.name == "Live TV" and .type == "tv") | .id' /tmp/master-manifest.json | head -n1)"
-          RADIO_CATALOG_ID="$(jq -r '.catalogs[] | select(.name == "Radio" and .type == "other") | .id' /tmp/master-manifest.json | head -n1)"
-          PORN_CATALOG_ID="$(jq -r '.catalogs[] | select(.name == "Porn" and .type == "movie") | .id' /tmp/master-manifest.json | head -n1)"
-
-          test -n "$LIVE_CATALOG_ID"
-          test -n "$RADIO_CATALOG_ID"
-          test -n "$PORN_CATALOG_ID"
-          [[ "$LIVE_CATALOG_ID" == *.master-live-tv ]]
-          [[ "$RADIO_CATALOG_ID" == *.master-radio ]]
-          [[ "$PORN_CATALOG_ID" == *.master-adult ]]
-
-          LIVE_PREFIX="${LIVE_CATALOG_ID%.master-live-tv}"
-          RADIO_PREFIX="${RADIO_CATALOG_ID%.master-radio}"
-          PORN_PREFIX="${PORN_CATALOG_ID%.master-adult}"
-          [ "$LIVE_PREFIX" = "$RADIO_PREFIX" ]
-          [ "$LIVE_PREFIX" = "$PORN_PREFIX" ]
-
-          python3 - <<'PY'
-          import json
-          m = json.load(open('/tmp/master-manifest.json'))
-          cats = m.get('catalogs', [])
-          wanted = [('Live TV','tv'), ('Radio','other'), ('Porn','movie')]
-          positions=[]
-          for name, typ in wanted:
-              matches=[i for i,c in enumerate(cats) if c.get('name')==name and c.get('type')==typ]
-              if len(matches) != 1:
-                  raise SystemExit(f'Expected one {name}/{typ} catalog, got {matches}')
-              positions.append(matches[0])
-          if positions != list(range(positions[0], positions[0] + 3)):
-              raise SystemExit(f'Master Native catalogs are not adjacent/in order: {positions}')
-          PY
-
-          ENCODED_LIVE_CATALOG_ID="$(encode_id "$LIVE_CATALOG_ID")"
-          ENCODED_RADIO_CATALOG_ID="$(encode_id "$RADIO_CATALOG_ID")"
-          ENCODED_PORN_CATALOG_ID="$(encode_id "$PORN_CATALOG_ID")"
-
-          curl --fail --silent --show-error "$BASE/catalog/tv/$ENCODED_LIVE_CATALOG_ID.json" -o /tmp/live-tv.json
-          jq -e '.metas | type == "array" and length > 0' /tmp/live-tv.json
-          for ID in ustv-priority-phx-abc15 ustv-priority-phx-fox10 ustv-priority-phx-12news ustv-priority-phx-azfamily; do
-            jq -e --arg id "$ID" '.metas | any(.id == $id)' /tmp/live-tv.json
-          done
-          jq -e '.metas[] | select(.id == "ustv-priority-phx-abc15") | (.poster | type == "string" and length > 0)' /tmp/live-tv.json
-
-          PHX_OK=0
-          for LIVE_ID in ustv-priority-phx-abc15 ustv-priority-phx-fox10 ustv-priority-phx-12news ustv-priority-phx-azfamily; do
-            ENCODED_ID="$(encode_id "$LIVE_ID")"
-            if curl --fail --silent --show-error "$BASE/stream/tv/$ENCODED_ID.json" -o /tmp/live-streams.json && has_playable_url /tmp/live-streams.json; then
-              PHX_OK=$((PHX_OK+1))
-            fi
-          done
-          [ "$PHX_OK" -ge 2 ]
-
-          UPSTREAM_OK=0
-          while IFS= read -r LIVE_ID; do
-            [ -n "$LIVE_ID" ] || continue
-            case "$LIVE_ID" in ustv-priority-*) continue ;; esac
-            ENCODED_ID="$(encode_id "$LIVE_ID")"
-            if curl --fail --silent --show-error "$BASE/stream/tv/$ENCODED_ID.json" -o /tmp/upstream.json && has_playable_url /tmp/upstream.json; then
-              UPSTREAM_OK=1
-              break
-            fi
-          done < <(jq -r '.metas[0:40][]?.id' /tmp/live-tv.json)
-          [ "$UPSTREAM_OK" -eq 1 ]
-
-          curl --fail --silent --show-error "$BASE/catalog/other/$ENCODED_RADIO_CATALOG_ID.json" -o /tmp/radio.json
-          jq -e '.metas | type == "array" and length > 0' /tmp/radio.json
-          RADIO_OK=0
-          while IFS= read -r RADIO_ID; do
-            [ -n "$RADIO_ID" ] || continue
-            ENCODED_ID="$(encode_id "$RADIO_ID")"
-            if curl --fail --silent --show-error "$BASE/stream/other/$ENCODED_ID.json" -o /tmp/radio-streams.json && has_playable_url /tmp/radio-streams.json; then
-              RADIO_OK=1
-              break
-            fi
-          done < <(jq -r '.metas[0:8][]?.id' /tmp/radio.json)
-          [ "$RADIO_OK" -eq 1 ]
-
-          curl --fail --silent --show-error "$BASE/catalog/movie/$ENCODED_PORN_CATALOG_ID.json" -o /tmp/porn.json
-          jq -e '.metas | type == "array" and length > 0' /tmp/porn.json
-
-          echo 'Master Native QA passed: auto-injected native addon contributes adjacent Home/Board catalogs and TV/Radio/Porn resource routes work.'
+      - name: Full installed Master regression QA
+        run: bash scripts/qa-master-installed.sh
 
       - name: Dump QA logs on failure
         if: failure()
-        run: docker logs master-qa 2>&1 || true
+        run: |
+          docker logs master-qa 2>&1 || true
+          docker logs mediaflow-qa 2>&1 || true
 
-      - name: Stop QA container
+      - name: Stop QA containers
         if: always()
-        run: docker rm -f master-qa 2>/dev/null || true
+        run: |
+          docker rm -f master-qa 2>/dev/null || true
+          docker rm -f mediaflow-qa 2>/dev/null || true
 
       - name: Publish QA-approved Master Add-On
         if: success()
