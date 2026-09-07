@@ -15,25 +15,35 @@ const router: Router = Router();
 
 export default router;
 
-// This private fork has client-visible manifest changes independent of upstream.
-// Always publish our own monotonically increasing semver so Stremio cannot treat
-// a changed Master manifest as the same cached upstream addon revision.
-const MASTER_MANIFEST_VERSION = '99.0.113';
+const MASTER_MANIFEST_VERSION = '99.0.114';
+const MASTER_CATALOG_SUFFIX_ORDER = [
+  '.master-live-tv',
+  '.master-radio',
+  '.master-adult',
+] as const;
+
+function putMasterCatalogsLast(catalogs: Manifest['catalogs']): Manifest['catalogs'] {
+  const rank = (id: string) =>
+    MASTER_CATALOG_SUFFIX_ORDER.findIndex((suffix) => id.endsWith(suffix));
+  const normal = catalogs.filter((catalog) => rank(catalog.id) === -1);
+  const master = catalogs
+    .filter((catalog) => rank(catalog.id) !== -1)
+    .sort((a, b) => rank(a.id) - rank(b.id));
+  return [...normal, ...master];
+}
 
 const manifest = async (config?: UserData): Promise<Manifest> => {
   let addonId = appConfig.branding.addonId;
-  if (config) {
-    addonId = addonId += `.${userScopeIdSuffix(config)}`;
-  }
+  if (config) addonId += `.${userScopeIdSuffix(config)}`;
+
   let catalogs: Manifest['catalogs'] = [];
   let resources: Manifest['resources'] = [];
   let addonCatalogs: Manifest['addonCatalogs'] = [];
+
   if (config) {
     const aiostreams = new AIOStreams(config, { skipFailedAddons: true });
-
     await aiostreams.initialise();
-
-    catalogs = aiostreams.getCatalogs();
+    catalogs = putMasterCatalogsLast(aiostreams.getCatalogs());
     resources = aiostreams.getResources();
     addonCatalogs = aiostreams.getAddonCatalogs();
   }
@@ -46,8 +56,7 @@ const manifest = async (config?: UserData): Promise<Manifest> => {
     catalogs,
     resources,
     types: resources.reduce((types, resource) => {
-      const resourceTypes =
-        typeof resource === 'string' ? [resource] : resource.types;
+      const resourceTypes = typeof resource === 'string' ? [resource] : resource.types;
       return [...new Set([...types, ...resourceTypes])];
     }, [] as string[]),
     logo:
