@@ -15,8 +15,8 @@ replaceOnce(
 );
 
 replaceOnce(
-  'item.indexer === \'EPorner\'\n            ? await resolveEpornerCurrent(item)',
-  'item.indexer === \'EPorner\'\n            ? await resolveEpornerResilient(item)',
+  "item.indexer === 'EPorner'\n            ? await resolveEpornerCurrent(item)",
+  "item.indexer === 'EPorner'\n            ? await resolveEpornerResilient(item)",
   'resilient EPorner playback'
 );
 
@@ -145,9 +145,9 @@ replaceOnce(
           const hlsProxy = mediaflowLiveTvUrl(stream.url, 'hls');
           return [
             { name: \`Master • ${'${label}'} • Direct\`, title: label, url: stream.url, behaviorHints: { notWebReady: true } },
-            transcodedStream ? { name: \`Master • ${'${label}'} • Compatible Stream\`, title: label, url: transcodedStream, behaviorHints: { notWebReady: false } } : undefined,
-            hlsProxy ? { name: \`Master • ${'${label}'} • HLS Proxy\`, title: label, url: hlsProxy, behaviorHints: { notWebReady: false } } : undefined,
-            { name: \`Master • ${'${label}'} • Relay Fallback\`, title: label, url: mediaRelayUrl(req, stream.url), behaviorHints: { notWebReady: false } },
+            transcodedStream ? { name: \`Master • ${'${label}'} • Compatible Stream\`, title: label, url: transcodedStream, behaviorHints: { notWebReady: true } } : undefined,
+            hlsProxy ? { name: \`Master • ${'${label}'} • HLS Proxy\`, title: label, url: hlsProxy, behaviorHints: { notWebReady: true } } : undefined,
+            { name: \`Master • ${'${label}'} • Relay Fallback\`, title: label, url: mediaRelayUrl(req, stream.url), behaviorHints: { notWebReady: true } },
           ].filter(Boolean);
         });
         res.status(200).json({ streams } as any);
