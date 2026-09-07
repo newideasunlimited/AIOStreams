@@ -11,6 +11,12 @@ function replaceOnce(before, after, label) {
 }
 
 replaceOnce(
+  "} from '@aiostreams/core';",
+  "} from '@aiostreams/core';\nimport { fetchRadioBrowserJson } from '../../utils/radio-browser.js';",
+  'Radio Browser helper import'
+);
+
+replaceOnce(
   "const USA_TV_CATALOG_URL =\n  'https://raw.githubusercontent.com/yowmamasita/usa-tv-next/main/catalog/tv/all.json';",
   "const USA_TV_CATALOG_URL =\n  'https://raw.githubusercontent.com/yowmamasita/usa-tv-next/main/catalog/tv/all.json';\nconst USA_TV_STREAM_BASE =\n  'https://raw.githubusercontent.com/yowmamasita/usa-tv-next/main/stream/tv';",
   'USA TV stream base'
@@ -46,15 +52,16 @@ replaceOnce(
   const base = publicMediaflowBaseUrl();
   if (!base) return undefined;
 
-  const endpoint = mode === 'compatibility' ? '/proxy/stream' : '/proxy/hls/manifest.m3u8';
+  const endpoint =
+    mode === 'compatibility'
+      ? '/proxy/transcode/playlist.m3u8'
+      : '/proxy/hls/manifest.m3u8';
   const url = new URL(endpoint, \`${'${base}'}/\`);
   url.searchParams.set('d', destination);
   const password = process.env.MEDIAFLOW_API_PASSWORD;
   if (password) url.searchParams.set('api_password', password);
   url.searchParams.set('h_user-agent', DIRECT_USER_AGENT);
-  if (mode === 'compatibility') {
-    url.searchParams.set('transcode', 'true');
-  } else {
+  if (mode === 'hls') {
     url.searchParams.set('force_playlist_proxy', 'true');
     url.searchParams.set('start_offset', '-18');
   }
@@ -72,11 +79,9 @@ replaceOnce(
     poster: item.poster || item.logo,
     background: item.poster || item.logo,
     posterShape: 'poster',`,
-`function liveTvPosterUrl(id: string): string | undefined {
+`function liveTvPosterUrl(_id: string): string | undefined {
   const base = publicBaseUrl();
-  return base
-    ? \`${'${base}'}/builtins/master-native/live-tv-poster/${'${encodeURIComponent(id)}'}.svg\`
-    : undefined;
+  return base ? \`${'${base}'}/logo.png\` : undefined;
 }
 
 function liveTvMeta(item: LiveTvMeta) {
@@ -88,7 +93,7 @@ function liveTvMeta(item: LiveTvMeta) {
     poster: artwork,
     background: artwork,
     posterShape: 'poster',`,
-  'Live TV poster fallback'
+  'raster-safe Live TV poster fallback'
 );
 
 replaceOnce(
@@ -152,6 +157,91 @@ replaceOnce(
 );
 
 replaceOnce(
+`async function fetchRadioStations(extra?: string): Promise<RadioStation[]> {
+  const { skip, search, genre } = parseExtras(extra);
+  const url = search || genre
+    ? new URL(\`${'${RADIO_BROWSER_BASE}'}/json/stations/search\`)
+    : new URL(\`${'${RADIO_BROWSER_BASE}'}/json/stations/topclick/100\`);
+  if (search) url.searchParams.set('name', search);
+  if (genre) url.searchParams.set('tag', genre.toLowerCase());
+  url.searchParams.set('hidebroken', 'true');
+  url.searchParams.set('limit', '80');
+  url.searchParams.set('offset', String(skip));
+  url.searchParams.set('order', 'clickcount');
+  url.searchParams.set('reverse', 'true');
+
+  const response = await fetch(url.toString(), {
+    headers: { 'User-Agent': 'Master-Addon/2.0' },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) throw new Error(\`Radio Browser returned ${'${response.status}'}\`);
+  const stations = (await response.json()) as RadioStation[];
+  return (Array.isArray(stations) ? stations : []).filter(
+    (station) =>
+      station.stationuuid &&
+      station.name &&
+      (station.url_resolved || station.url) &&
+      station.lastcheckok !== 0
+  );
+}`,
+`async function fetchRadioStations(extra?: string): Promise<RadioStation[]> {
+  const { skip, search, genre } = parseExtras(extra);
+  const params = new URLSearchParams();
+  if (search) params.set('name', search);
+  if (genre) params.set('tag', genre.toLowerCase());
+  params.set('hidebroken', 'true');
+  params.set('limit', '80');
+  params.set('offset', String(skip));
+  params.set('order', 'clickcount');
+  params.set('reverse', 'true');
+  const path = search || genre ? '/json/stations/search' : '/json/stations/topclick/100';
+  const stations = await fetchRadioBrowserJson<RadioStation[]>(path, params);
+  return (Array.isArray(stations) ? stations : []).filter(
+    (station) =>
+      station.stationuuid &&
+      station.name &&
+      (station.url_resolved || station.url) &&
+      station.lastcheckok !== 0
+  );
+}`,
+  'Radio Browser catalog failover'
+);
+
+replaceOnce(
+`async function getRadioStation(id: string): Promise<RadioStation | undefined> {
+  const uuid = id.startsWith(MASTER_RADIO_ID_PREFIX)
+    ? id.slice(MASTER_RADIO_ID_PREFIX.length)
+    : id;
+  if (!uuid) return undefined;
+  const response = await fetch(
+    \`${'${RADIO_BROWSER_BASE}'}/json/stations/byuuid/${'${encodeURIComponent(uuid)}'}\`,
+    {
+      headers: { 'User-Agent': 'Master-Addon/2.0' },
+      signal: AbortSignal.timeout(10000),
+    }
+  );
+  if (!response.ok) return undefined;
+  const stations = (await response.json()) as RadioStation[];
+  return Array.isArray(stations) ? stations[0] : undefined;
+}`,
+`async function getRadioStation(id: string): Promise<RadioStation | undefined> {
+  const uuid = id.startsWith(MASTER_RADIO_ID_PREFIX)
+    ? id.slice(MASTER_RADIO_ID_PREFIX.length)
+    : id;
+  if (!uuid) return undefined;
+  try {
+    const stations = await fetchRadioBrowserJson<RadioStation[]>(
+      \`/json/stations/byuuid/${'${encodeURIComponent(uuid)}'}\`
+    );
+    return Array.isArray(stations) ? stations[0] : undefined;
+  } catch {
+    return undefined;
+  }
+}`,
+  'Radio Browser station failover'
+);
+
+replaceOnce(
 `  const baseResources = manifest.resources.map((resource) => {`,
 `  const adultCatalog = baseCatalogs.find((catalog) => catalog.id === MASTER_ADULT_CATALOG_ID);
   const nonAdultBaseCatalogs = baseCatalogs.filter(
@@ -196,34 +286,5 @@ replaceOnce(
   'Porn catalog last'
 );
 
-replaceOnce(
-`router.get('/poster/:id.svg', (req: Request, res: Response) => {`,
-`router.get('/live-tv-poster/:id.svg', (req: Request, res: Response) => {
-  const rawId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const id = decodeURIComponent(rawId || '');
-  void findLiveTvItem(id).then((item) => {
-    const title = (item?.name || 'Live TV').slice(0, 60);
-    const escaped = title
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-    res.type('image/svg+xml').send(\`
-      <svg xmlns="http://www.w3.org/2000/svg" width="600" height="900" viewBox="0 0 600 900">
-        <rect width="600" height="900" fill="#111827"/>
-        <rect x="36" y="36" width="528" height="828" rx="28" fill="#1f2937"/>
-        <text x="300" y="300" text-anchor="middle" font-family="sans-serif" font-size="62" font-weight="700" fill="#ffffff">LIVE</text>
-        <text x="300" y="385" text-anchor="middle" font-family="sans-serif" font-size="62" font-weight="700" fill="#ffffff">TV</text>
-        <text x="300" y="560" text-anchor="middle" font-family="sans-serif" font-size="27" fill="#d1d5db">${'${escaped}'}</text>
-      </svg>
-    \`);
-  }).catch(() => res.status(404).end());
-});
-
-router.get('/poster/:id.svg', (req: Request, res: Response) => {`,
-  'Live TV poster route'
-);
-
 fs.writeFileSync(path, source);
-console.log('Applied Master Live TV source/proxy/catalog-order patch with stable IDs.');
+console.log('Applied Master Live TV/source/radio/catalog-order patch with stable IDs.');
