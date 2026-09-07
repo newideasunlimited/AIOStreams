@@ -74,29 +74,15 @@ replaceOnce(
 );
 
 replaceOnce(
-`function liveTvMeta(item: LiveTvMeta) {
-  return {
-    id: item.id,
-    type: 'tv',
-    name: item.name || 'Live TV',
-    poster: item.poster || item.logo,
-    background: item.poster || item.logo,
-    posterShape: 'poster',`,
 `function liveTvPosterUrl(_id: string): string | undefined {
   const base = publicBaseUrl();
   return base ? \`${'${base}'}/logo.png\` : undefined;
-}
-
-function liveTvMeta(item: LiveTvMeta) {
-  const artwork = item.poster || item.logo || (item.id ? liveTvPosterUrl(item.id) : undefined);
-  return {
-    id: item.id,
-    type: 'tv',
-    name: item.name || 'Live TV',
-    poster: artwork,
-    background: artwork,
-    posterShape: 'poster',`,
-  'raster-safe Live TV poster fallback'
+}`,
+`function liveTvPosterUrl(id: string): string | undefined {
+  const base = publicBaseUrl();
+  return base ? \`${'${base}'}/master-static/live-tv/${'${encodeURIComponent(id)}'}.svg\` : undefined;
+}`,
+  'channel-specific Live TV artwork'
 );
 
 replaceOnce(
