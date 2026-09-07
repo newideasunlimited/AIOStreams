@@ -4,9 +4,7 @@ const path = 'packages/server/src/routes/stremio/stream.ts';
 let source = fs.readFileSync(path, 'utf8');
 
 function replaceOnce(before, after, label) {
-  if (!source.includes(before)) {
-    throw new Error(`Installed stream patch failed: ${label} target not found`);
-  }
+  if (!source.includes(before)) throw new Error(`Installed stream patch failed: ${label} target not found`);
   source = source.replace(before, after);
 }
 
@@ -41,18 +39,10 @@ function publicMediaflowBaseUrl(): string | undefined {
   }
 }
 
-function mediaflowLiveTvUrl(
-  destination: string,
-  mode: 'transcoded-hls' | 'transcoded-stream' | 'hls'
-): string | undefined {
+function mediaflowLiveTvUrl(destination: string, mode: 'transcoded-stream' | 'hls'): string | undefined {
   const base = publicMediaflowBaseUrl();
   if (!base) return undefined;
-  const endpoint =
-    mode === 'transcoded-hls'
-      ? '/proxy/transcode/playlist.m3u8'
-      : mode === 'transcoded-stream'
-        ? '/proxy/stream'
-        : '/proxy/hls/manifest.m3u8';
+  const endpoint = mode === 'transcoded-stream' ? '/proxy/stream' : '/proxy/hls/manifest.m3u8';
   const url = new URL(endpoint, \`${'${base}'}/\`);
   url.searchParams.set('d', destination);
   const password = process.env.MEDIAFLOW_API_PASSWORD;
@@ -75,12 +65,8 @@ replaceOnce(
 `async function getLiveTvStreams(id: string): Promise<LiveTvStream[]> {
   const priority = getPriorityLiveTvStreams(id);
   if (priority && priority.length > 0) {
-    return priority
-      .filter((stream) => Boolean(stream.url))
-      .sort((a, b) => tvStreamScore(b) - tvStreamScore(a))
-      .slice(0, 12);
+    return priority.filter((stream) => Boolean(stream.url)).sort((a, b) => tvStreamScore(b) - tvStreamScore(a)).slice(0, 12);
   }
-
   const item = (await getLiveTvItems()).find((candidate) => candidate.id === id);
   let streams: LiveTvStream[] = [];`,
   'priority live stream lookup'
@@ -104,14 +90,10 @@ replaceOnce(
   return Array.isArray(stations) ? stations[0] : undefined;
 }`,
 `async function getRadioStation(id: string): Promise<RadioStation | undefined> {
-  const uuid = id.startsWith(MASTER_RADIO_ID_PREFIX)
-    ? id.slice(MASTER_RADIO_ID_PREFIX.length)
-    : id;
+  const uuid = id.startsWith(MASTER_RADIO_ID_PREFIX) ? id.slice(MASTER_RADIO_ID_PREFIX.length) : id;
   if (!uuid) return undefined;
   try {
-    const stations = await fetchRadioBrowserJson<RadioStation[]>(
-      \`/json/stations/byuuid/${'${encodeURIComponent(uuid)}'}\`
-    );
+    const stations = await fetchRadioBrowserJson<RadioStation[]>(\`/json/stations/byuuid/${'${encodeURIComponent(uuid)}'}\`);
     return Array.isArray(stations) ? stations[0] : undefined;
   } catch {
     return undefined;
@@ -147,40 +129,12 @@ replaceOnce(
         const streams = candidates.flatMap((stream, index) => {
           if (!stream.url) return [];
           const label = friendlyLiveTvLabel(stream, index);
-          const transcodedHls = mediaflowLiveTvUrl(stream.url, 'transcoded-hls');
           const transcodedStream = mediaflowLiveTvUrl(stream.url, 'transcoded-stream');
           const hlsProxy = mediaflowLiveTvUrl(stream.url, 'hls');
           return [
-            transcodedHls
-              ? {
-                  name: \`Master • ${'${label}'} • Transcoded HLS\`,
-                  title: label,
-                  url: transcodedHls,
-                  behaviorHints: { notWebReady: false },
-                }
-              : undefined,
-            transcodedStream
-              ? {
-                  name: \`Master • ${'${label}'} • Compatible Stream\`,
-                  title: label,
-                  url: transcodedStream,
-                  behaviorHints: { notWebReady: false },
-                }
-              : undefined,
-            hlsProxy
-              ? {
-                  name: \`Master • ${'${label}'} • HLS Proxy\`,
-                  title: label,
-                  url: hlsProxy,
-                  behaviorHints: { notWebReady: false },
-                }
-              : undefined,
-            {
-              name: \`Master • ${'${label}'} • Relay Fallback\`,
-              title: label,
-              url: mediaRelayUrl(req, stream.url),
-              behaviorHints: { notWebReady: false },
-            },
+            transcodedStream ? { name: \`Master • ${'${label}'} • Compatible Stream\`, title: label, url: transcodedStream, behaviorHints: { notWebReady: false } } : undefined,
+            hlsProxy ? { name: \`Master • ${'${label}'} • HLS Proxy\`, title: label, url: hlsProxy, behaviorHints: { notWebReady: false } } : undefined,
+            { name: \`Master • ${'${label}'} • Relay Fallback\`, title: label, url: mediaRelayUrl(req, stream.url), behaviorHints: { notWebReady: false } },
           ].filter(Boolean);
         });
         res.status(200).json({ streams } as any);
@@ -195,4 +149,4 @@ replaceOnce(
 );
 
 fs.writeFileSync(path, source);
-console.log('Applied installed Master stream priority/radio/MediaFlow patch.');
+console.log('Applied installed Master stream priority/radio/live-MediaFlow patch.');
