@@ -4,6 +4,22 @@ set -euo pipefail
 encode_id(){ python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
 has_playable_url(){ jq -e '.streams | type == "array" and any(.url? | type == "string" and length > 0)' "$1" >/dev/null; }
 
+MEDIAFLOW_STARTED=0
+cleanup(){ if [ "$MEDIAFLOW_STARTED" -eq 1 ]; then docker rm -f mediaflow-qa >/dev/null 2>&1 || true; fi; }
+trap cleanup EXIT
+
+if ! curl -fsS http://127.0.0.1:8888/health >/dev/null 2>&1; then
+  docker run -d --name mediaflow-qa -p 8888:8888 \
+    -e ENABLE_TRANSCODE=true -e TRANSCODE_PREFER_GPU=false \
+    mhdzumair/mediaflow-proxy:latest >/dev/null
+  MEDIAFLOW_STARTED=1
+  for _ in $(seq 1 60); do
+    if curl -fsS http://127.0.0.1:8888/health >/dev/null 2>&1; then break; fi
+    sleep 2
+  done
+fi
+curl -fsS http://127.0.0.1:8888/health | jq -e '.status == "healthy"' >/dev/null
+
 cat >/tmp/create-user.json <<'JSON'
 {
   "config": {
@@ -18,15 +34,14 @@ cat >/tmp/create-user.json <<'JSON'
 }
 JSON
 
-curl --fail --silent --show-error -H 'Content-Type: application/json' \
-  --data-binary @/tmp/create-user.json http://127.0.0.1:3000/api/v1/user \
-  -o /tmp/create-user-response.json
+curl -fsS -H 'Content-Type: application/json' --data-binary @/tmp/create-user.json \
+  http://127.0.0.1:3000/api/v1/user -o /tmp/create-user-response.json
 UUID="$(jq -r '.data.uuid // empty' /tmp/create-user-response.json)"
 ENCRYPTED_PASSWORD="$(jq -r '.data.encryptedPassword // empty' /tmp/create-user-response.json)"
 test -n "$UUID"; test -n "$ENCRYPTED_PASSWORD"
 BASE="http://127.0.0.1:3000/stremio/$UUID/$ENCRYPTED_PASSWORD"
 
-curl --fail --silent --show-error -D /tmp/manifest.headers "$BASE/manifest.json" -o /tmp/master-manifest.json
+curl -fsS -D /tmp/manifest.headers "$BASE/manifest.json" -o /tmp/master-manifest.json
 grep -qi '^cache-control:.*no-store' /tmp/manifest.headers
 jq -e '.version == "99.0.114"' /tmp/master-manifest.json
 
@@ -37,12 +52,10 @@ test -n "$LIVE_CATALOG_ID"; test -n "$RADIO_CATALOG_ID"; test -n "$PORN_CATALOG_
 [[ "$LIVE_CATALOG_ID" == *.master-live-tv ]]
 [[ "$RADIO_CATALOG_ID" == *.master-radio ]]
 [[ "$PORN_CATALOG_ID" == *.master-adult ]]
-
 jq -e '[.catalogs[] | select(.name == "Live TV" or .name == "Radio" or .name == "Porn") | .extra[]? | select(.isRequired == true)] | length == 0' /tmp/master-manifest.json
 python3 - <<'PY'
 import json
-m=json.load(open('/tmp/master-manifest.json'))
-c=m['catalogs']
+c=json.load(open('/tmp/master-manifest.json'))['catalogs']
 last=[(x.get('name'),x.get('type')) for x in c[-3:]]
 expected=[('Live TV','tv'),('Radio','other'),('Porn','movie')]
 if last != expected: raise SystemExit(f'Wrong final Board rows: {last}')
@@ -88,26 +101,22 @@ has_playable_url /tmp/radio-streams.json
 
 curl -fsS "$BASE/catalog/movie/$EPORN.json" -o /tmp/porn.json
 jq -e '.metas | type=="array" and length>0' /tmp/porn.json
-PORN_META_OK=0
-PORN_STREAM_OK=0
+PORN_META_OK=0; PORN_STREAM_OK=0
 while IFS= read -r ID; do
   [ -n "$ID" ] || continue
   EID="$(encode_id "$ID")"
   if [ "$PORN_META_OK" -eq 0 ] && curl -fsS --max-time 15 "$BASE/meta/movie/$EID.json" -o /tmp/porn-meta.json && jq -e '.meta != null' /tmp/porn-meta.json >/dev/null; then PORN_META_OK=1; fi
   if curl -fsS --max-time 25 "$BASE/stream/movie/$EID.json" -o /tmp/porn-streams.json && has_playable_url /tmp/porn-streams.json; then PORN_STREAM_OK=1; break; fi
 done < <(jq -r '.metas[0:12][]?.id' /tmp/porn.json)
-[ "$PORN_META_OK" -eq 1 ]
-[ "$PORN_STREAM_OK" -eq 1 ]
+[ "$PORN_META_OK" -eq 1 ]; [ "$PORN_STREAM_OK" -eq 1 ]
 
-curl -fsS http://127.0.0.1:8888/health | jq -e '.status == "healthy"' >/dev/null
 curl -fsS --max-time 25 \
-  'http://127.0.0.1:8888/proxy/hls/manifest.m3u8?d=https%3A%2F%2Fdevstreaming-cdn.apple.com%2Fvideos%2Fstreaming%2Fexamples%2Fimg_bipbop_adv_example_fmp4%2Fmaster.m3u8&force_playlist_proxy=true&api_password=masterqa' \
+  'http://127.0.0.1:8888/proxy/hls/manifest.m3u8?d=https%3A%2F%2Fdevstreaming-cdn.apple.com%2Fvideos%2Fstreaming%2Fexamples%2Fimg_bipbop_adv_example_fmp4%2Fmaster.m3u8&force_playlist_proxy=true' \
   -o /tmp/mediaflow-hls.m3u8
 grep -q '#EXTM3U' /tmp/mediaflow-hls.m3u8
-
 curl -fsS --max-time 35 \
-  'http://127.0.0.1:8888/proxy/transcode/playlist.m3u8?d=https%3A%2F%2Fcommondatastorage.googleapis.com%2Fgtv-videos-bucket%2Fsample%2FForBiggerBlazes.mp4&api_password=masterqa' \
+  'http://127.0.0.1:8888/proxy/transcode/playlist.m3u8?d=https%3A%2F%2Fcommondatastorage.googleapis.com%2Fgtv-videos-bucket%2Fsample%2FForBiggerBlazes.mp4' \
   -o /tmp/mediaflow-transcode.m3u8
 grep -q '#EXTM3U' /tmp/mediaflow-transcode.m3u8
 
-echo 'FULL MASTER QA PASSED: Board manifest/order, native catalog+meta+stream routes, TV upstream/fallbacks, MediaFlow HLS+transcode, Radio Browser, adult catalog/meta/playback.'
+echo 'FULL MASTER QA PASSED: Board order, catalog/meta/stream routes, TV source fallbacks, MediaFlow HLS+transcode, Radio Browser failover, adult catalog/meta/playback.'
