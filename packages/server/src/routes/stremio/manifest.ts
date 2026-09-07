@@ -15,7 +15,7 @@ const router: Router = Router();
 
 export default router;
 
-const MASTER_MANIFEST_VERSION = '99.0.115';
+const MASTER_MANIFEST_VERSION = '99.0.116';
 const MASTER_CATALOG_SUFFIX_ORDER = [
   '.master-live-tv',
   '.master-radio',
