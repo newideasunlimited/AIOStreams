@@ -18,7 +18,7 @@ export default router;
 // This private fork has client-visible manifest changes independent of upstream.
 // Always publish our own monotonically increasing semver so Stremio cannot treat
 // a changed Master manifest as the same cached upstream addon revision.
-const MASTER_MANIFEST_VERSION = '99.0.112';
+const MASTER_MANIFEST_VERSION = '99.0.113';
 
 const manifest = async (config?: UserData): Promise<Manifest> => {
   let addonId = appConfig.branding.addonId;
@@ -76,9 +76,10 @@ router.get(
   async (req: Request, res: Response<Manifest>, next: NextFunction) => {
     logger.info({ uuid: req.userData?.uuid }, 'received request for manifest');
     try {
-      // Avoid intermediary/client HTTP caches preserving an obsolete catalog
-      // list after a private Master rebuild.
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, proxy-revalidate'
+      );
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
       res.status(200).json(await manifest(req.userData));
