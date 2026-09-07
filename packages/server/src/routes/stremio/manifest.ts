@@ -9,14 +9,15 @@ import {
 } from '@aiostreams/core';
 import { Manifest } from '@aiostreams/core';
 import { createLogger } from '@aiostreams/core';
-import { MASTER_CATALOGS } from './master-native-resources.js';
 
 const logger = createLogger('server');
 const router: Router = Router();
 
 export default router;
 
-const MASTER_MANIFEST_VERSION = '2.1.0';
+// Private Master builds change independently of upstream release metadata.
+// Keep a real fallback version so Stremio can refresh the installed manifest.
+const MASTER_MANIFEST_VERSION = '2.1.1';
 
 const manifest = async (config?: UserData): Promise<Manifest> => {
   let addonId = appConfig.branding.addonId;
@@ -27,6 +28,11 @@ const manifest = async (config?: UserData): Promise<Manifest> => {
   let resources: Manifest['resources'] = [];
   let addonCatalogs: Manifest['addonCatalogs'] = [];
   if (config) {
+    // IMPORTANT: Master Native must flow through the same preset/addon
+    // aggregation pipeline as every other addon. Stremio Board/Home rendered
+    // these catalogs correctly in the known-good build when they came from
+    // aiostreams.getCatalogs(). Manually appending raw catalog objects here
+    // produced valid JSON but the TV client stopped surfacing the rows.
     const aiostreams = new AIOStreams(config, { skipFailedAddons: true });
 
     await aiostreams.initialise();
@@ -35,24 +41,6 @@ const manifest = async (config?: UserData): Promise<Manifest> => {
     resources = aiostreams.getResources();
     addonCatalogs = aiostreams.getAddonCatalogs();
   }
-
-  const masterIds = new Set(MASTER_CATALOGS.map((catalog) => catalog.id));
-  catalogs = [
-    ...catalogs.filter((catalog) => !masterIds.has(catalog.id as any)),
-    ...MASTER_CATALOGS,
-  ] as Manifest['catalogs'];
-
-  const requiredResources = ['catalog', 'meta', 'stream'] as const;
-  for (const required of requiredResources) {
-    if (!resources.some((resource) => resource === required)) {
-      resources.push(required as any);
-    }
-  }
-
-  const resourceTypes = resources.reduce((types, resource) => {
-    const values = typeof resource === 'string' ? [] : resource.types;
-    return [...new Set([...types, ...values])];
-  }, [] as string[]);
 
   return {
     name: config?.addonName || appConfig.branding.addonName,
@@ -64,7 +52,11 @@ const manifest = async (config?: UserData): Promise<Manifest> => {
     description: config?.addonDescription || appConfig.bootstrap.description,
     catalogs,
     resources,
-    types: [...new Set([...resourceTypes, 'movie', 'tv', 'other'])],
+    types: resources.reduce((types, resource) => {
+      const resourceTypes =
+        typeof resource === 'string' ? [resource] : resource.types;
+      return [...new Set([...types, ...resourceTypes])];
+    }, [] as string[]),
     logo:
       config?.addonLogo ||
       `https://raw.githubusercontent.com/Viren070/AIOStreams/refs/heads/main/packages/frontend/public/logo${
